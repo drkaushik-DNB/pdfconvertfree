@@ -1,5 +1,5 @@
 /* PDF Convert Free offline cache: app files + converter libraries are kept after first use */
-const CACHE = 'pdfconvertfree-v1';
+const CACHE = 'pdfconvertfree-v2';
 const CORE = ['./', './index.html', './app.js', './i18n.js', './manifest.json', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting()));
