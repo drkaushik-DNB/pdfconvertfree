@@ -1,9 +1,9 @@
-/* FileFlip – browser-only Image / PDF / Word converter. Made by Dr. Kaushik. */
+/* PDF Converter – browser-only Image / PDF / Word converter. Made by Dr. Kaushik. */
 'use strict';
 
 /* ---------- Language ---------- */
 let LANG = 'en';
-try { LANG = localStorage.getItem('ff-lang') || 'en'; } catch (e) {}
+try { LANG = localStorage.getItem('pdfc-lang') || 'en'; } catch (e) {}
 if (LANG !== 'en' && !(window.I18N && I18N[LANG])) LANG = 'en';
 const T = s => (LANG !== 'en' && window.I18N && I18N[LANG] && I18N[LANG][s]) || s;
 
@@ -791,17 +791,17 @@ function langPicker() {
 function renderHeader(tool) {
   $('#hdr').innerHTML = '<div class="topbar">' + (tool ? '<button class="back" id="back">← ' + esc(T('All tools')) + '</button>' : '<span></span>') + langPicker() + '</div>' +
     (tool ? '<div class="logo"><i>⇄</i>' + esc(T(tool.title)) + '</div><p>' + esc(T(tool.desc)) + '</p>'
-      : '<div class="logo"><i>⇄</i>FileFlip</div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
+      : '<div class="logo"><i>⇄</i>PDF Converter</div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
         (installEvt ? ' <button class="privacy install" id="install">⬇ ' + esc(T('Install app')) + '</button>' : ''));
   const b = $('#back'); if (b) b.onclick = () => { location.hash = 'home'; };
   const ins = $('#install'); if (ins) ins.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderHeader(state.tool); };
   document.querySelectorAll('[data-lang]').forEach(x => x.onclick = () => {
-    LANG = x.dataset.lang; try { localStorage.setItem('ff-lang', LANG); } catch (e) {}
+    LANG = x.dataset.lang; try { localStorage.setItem('pdfc-lang', LANG); } catch (e) {}
     document.documentElement.lang = LANG; route(true);
   });
 }
 function setSeo(tool) {
-  document.title = tool ? tool.seo + ' – Free & Private | FileFlip' : 'FileFlip – Free Image, PDF & Word Converter (JPG, PDF, DOCX, OCR)';
+  document.title = tool ? tool.seo + ' – Free & Private | PDF Converter' : 'PDF Converter – Free Image, PDF & Word Converter (JPG, PDF, DOCX, OCR)';
   const m = document.querySelector('meta[name=description]');
   if (m) m.content = tool ? tool.desc + ' Free, no upload – works in your browser.' : 'Free online converter: JPG to PDF, PDF to Word, Word to PDF, compress PDF, resize image to KB, OCR in Hindi and Gujarati. Files never leave your device.';
 }

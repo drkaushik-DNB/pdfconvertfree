@@ -1,4 +1,4 @@
-# FileFlip
+# PDF Converter
 
 Free Image, PDF & Word converter that runs entirely in the browser. Files never leave your device.
 

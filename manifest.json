@@ -1,6 +1,6 @@
 {
-  "name": "FileFlip – Image, PDF & Word Converter",
-  "short_name": "FileFlip",
+  "name": "PDF Converter – Image, PDF & Word Converter",
+  "short_name": "PDF Converter",
   "description": "Convert images, PDFs and Word files on your device.",
   "start_url": "./",
   "scope": "./",

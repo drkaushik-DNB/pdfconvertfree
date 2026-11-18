@@ -1,4 +1,4 @@
-/* Hindi and Gujarati labels for FileFlip. Keys are the English text. */
+/* Hindi and Gujarati labels for PDF Converter. Keys are the English text. */
 window.I18N = {
 hi: {
 "Saved": "सेव हो गया",
