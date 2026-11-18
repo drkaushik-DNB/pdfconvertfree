@@ -325,6 +325,16 @@ hi: {
 "Image": "इमेज",
 "Pick a picture (stamp, photo); then drag it into place.": "तस्वीर (मोहर, फ़ोटो) चुनें; फिर उसे सही जगह खींचें।",
 "Select": "चुनें",
-"Tap an item to move, resize or delete it.": "किसी चीज़ को खिसकाने, साइज़ बदलने या हटाने के लिए उस पर टैप करें।"
+"Tap an item to move, resize or delete it.": "किसी चीज़ को खिसकाने, साइज़ बदलने या हटाने के लिए उस पर टैप करें।",
+"Change font": "फ़ॉन्ट बदलें",
+"Loading text reader (first time ~1 min)…": "टेक्स्ट रीडर लोड हो रहा है (पहली बार ~1 मिनट)…",
+"Reading the text so you can edit it…": "टेक्स्ट पढ़ा जा रहा है ताकि आप उसे बदल सकें…",
+"You can already add text meanwhile.": "तब तक आप टेक्स्ट जोड़ सकते हैं।",
+"Text found – choose ✏️ Edit text and tap any line to change it.": "टेक्स्ट मिल गया – ✏️ टेक्स्ट बदलें चुनें और किसी भी लाइन पर टैप करें।",
+"No readable text found on this page. Use Add text and White-out.": "इस पेज पर पढ़ने योग्य टेक्स्ट नहीं मिला। टेक्स्ट जोड़ें और सफ़ेद पट्टी इस्तेमाल करें।",
+"Could not read the text (needs internet the first time). You can still add text and white-out.": "टेक्स्ट नहीं पढ़ा जा सका (पहली बार इंटरनेट चाहिए)। आप फिर भी टेक्स्ट और सफ़ेद पट्टी जोड़ सकते हैं।",
+"Text language in photos / scans": "फ़ोटो / स्कैन में टेक्स्ट की भाषा",
+"Used to read text in photos and scanned pages so you can edit it": "फ़ोटो और स्कैन पेज का टेक्स्ट पढ़ने के लिए, ताकि आप उसे बदल सकें",
+"Edit text: the old words are covered with the page colour and your new words are written on top in a matching font. Photos and scans are read automatically (OCR) so their text can be edited too – font matching is approximate (use Aa to switch font). Edited text and white-out only hide the old text visually – not secure for removing private information.": "टेक्स्ट बदलना: पुराने शब्द पेज के रंग से ढक जाते हैं और नए शब्द मिलते-जुलते फ़ॉन्ट में ऊपर लिखे जाते हैं। फ़ोटो और स्कैन अपने आप पढ़े जाते हैं (OCR), ताकि उनका टेक्स्ट भी बदला जा सके – फ़ॉन्ट लगभग मिलता है (Aa से बदलें)। बदला टेक्स्ट और सफ़ेद पट्टी पुराने टेक्स्ट को सिर्फ़ छिपाते हैं – निजी जानकारी हटाने के लिए सुरक्षित नहीं।"
 }
 };

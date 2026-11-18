@@ -326,13 +326,13 @@ async function docxToPages(file, st) {
 }
 
 /* ---------- OCR (Tesseract.js) ---------- */
-let ocrWorker = null, ocrLang = null;
+let ocrWorker = null, ocrLang = null, ocrLog = null;
 async function getOcr(lang, st) {
   await load('tess');
   if (ocrWorker && ocrLang === lang) return ocrWorker;
   if (ocrWorker) { try { await ocrWorker.terminate(); } catch (e) {} ocrWorker = null; }
   st('Loading OCR engine and language data (first time can take a minute)…');
-  try { ocrWorker = await Tesseract.createWorker(lang.split('+'), 1); }
+  try { ocrWorker = await Tesseract.createWorker(lang.split('+'), 1, { logger: m => { if (ocrLog) try { ocrLog(m); } catch (e) {} } }); }
   catch (e) {
     throw new Error('Could not load the OCR engine or its language data. Check your internet connection.' + (inClaude ? ' (Inside the Claude preview, OCR downloads may be blocked – it works once the site is on GitHub Pages.)' : ''));
   }
@@ -1087,7 +1087,7 @@ async function runOrganize(files, o, st) {
 }
 
 /* ---------- PDF editor: Sign PDF + Edit & fill PDF ---------- */
-const ed = { doc: null, src: null, file: null, isImage: false, pageNo: 1, n: 0, objs: [], sel: null, fields: [], widgets: {}, runs: {}, sizes: {}, token: 0, sig: null, tool: null, mode: 'move', undo: [], vp: {} };
+const ed = { doc: null, src: null, file: null, isImage: false, pageNo: 1, n: 0, objs: [], sel: null, fields: [], widgets: {}, runs: {}, sizes: {}, token: 0, sig: null, tool: null, mode: 'move', undo: [], vp: {}, ocr: {} };
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const ED_COLORS = { black: '#111111', blue: '#1d3fbf', red: '#c81e1e' };
 const uid = () => Math.random().toString(36).slice(2);
@@ -1112,7 +1112,7 @@ async function editorLoad(keep) {
   if (!f) { box.innerHTML = ''; ed.file = null; return; }
   if (keep === true && ed.file === f && ed.doc) { renderEditor(); return; }
   const my = ++ed.token;
-  Object.assign(ed, { file: f, objs: [], sel: null, pageNo: 1, fields: [], widgets: {}, runs: {}, sizes: {}, undo: [], vp: {}, tool: state.tool.id });
+  Object.assign(ed, { file: f, objs: [], sel: null, pageNo: 1, fields: [], widgets: {}, runs: {}, sizes: {}, undo: [], vp: {}, ocr: {}, tool: state.tool.id });
   box.innerHTML = '<p class="mute">' + esc(T('Loading pages…')) + '</p>';
   try {
     if (ed.doc) closePdf(ed.doc);
@@ -1183,6 +1183,7 @@ async function pageRuns(pn) {
 function fontInfo(pn, run) {
   let name = '';
   try { const p = ed.pageObj && ed.pageObj.pageNumber === pn ? ed.pageObj : null; if (p && p.commonObjs.has(run.font)) name = p.commonObjs.get(run.font).name || ''; } catch (e) {}
+  if (run.ocr) return { fam: run.fam, bold: !!run.bold, italic: false };
   const n = name + ' ' + run.fam;
   const fam = /courier|mono/i.test(n) ? 'mono' : /times|serif(?!.*sans)|roman|georgia|garamond|cambria|book|minion/i.test(n) && !/sans/i.test(n) ? 'serif' : 'sans';
   return { fam, bold: /bold|black|heavy|semibold|demi/i.test(name), italic: /italic|oblique/i.test(name) };
@@ -1205,9 +1206,11 @@ function sampleColors(r) {
   for (let i = 0; i < d.length; i += 4) {
     const l = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
     if (l < dark[3]) dark = [d[i], d[i + 1], d[i + 2], l];
-    const key = (d[i] >> 3) + ',' + (d[i + 1] >> 3) + ',' + (d[i + 2] >> 3); counts[key] = (counts[key] || 0) + 1;
+    const key = (d[i] >> 3) + ',' + (d[i + 1] >> 3) + ',' + (d[i + 2] >> 3);
+    const c = counts[key] || (counts[key] = [0, 0, 0, 0]); c[0]++; c[1] += d[i]; c[2] += d[i + 1]; c[3] += d[i + 2];
   }
-  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0].split(',').map(v => Math.min(255, (+v << 3) + 4));
+  const best = Object.values(counts).sort((a, b) => b[0] - a[0])[0];
+  const top = [best[1], best[2], best[3]].map(v => Math.round(v / best[0]));
   const hex = a => '#' + a.slice(0, 3).map(v => v.toString(16).padStart(2, '0')).join('');
   return { ink: dark[3] > 160 ? '#111111' : hex(dark), bg: hex(top) };
 }
@@ -1236,6 +1239,73 @@ async function pageWidgets(pn) {
   return (ed.widgets[pn] = out);
 }
 
+/* Photos and scans: read the text with OCR so it can be edited like a PDF */
+function showOcrHint(pn, prog, loading, err) {
+  const el = $('#ocrhint'); if (!el || pn !== ed.pageNo) return;
+  const st = ed.ocr[pn];
+  if (!st) { el.hidden = true; return; }
+  el.hidden = false; el.className = 'ocrhint' + (st === 'failed' ? ' bad' : st === 'done' ? ' ok' : '');
+  if (st === 'running') el.innerHTML = '<span class="spin"></span> ' + esc(loading ? T('Loading text reader (first time ~1 min)…') : T('Reading the text so you can edit it…')) + (prog ? ' <b>' + Math.round(prog * 100) + '%</b>' : '') + ' <small>' + esc(T('You can already add text meanwhile.')) + '</small>';
+  else if (st === 'done') el.textContent = ed.runs[pn].length ? '✅ ' + T('Text found – choose ✏️ Edit text and tap any line to change it.') : 'ℹ️ ' + T('No readable text found on this page. Use Add text and White-out.');
+  else el.textContent = '⚠️ ' + T('Could not read the text (needs internet the first time). You can still add text and white-out.');
+}
+function ocrLines(d) {
+  if (d.lines && d.lines.length) return d.lines;
+  const out = []; for (const b of d.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) out.push(l);
+  return out;
+}
+function ocrRuns(lines, sc) {
+  const raw = [];
+  for (const ln of lines) {
+    let cur = null;
+    const flush = () => { if (cur && cur.text.trim()) raw.push(cur); cur = null; };
+    for (const w of ln.words || []) {
+      const t = (w.text || '').trim(); if (!t) continue;
+      const bb = w.bbox, hpx = bb.y1 - bb.y0;
+      const leader = /^[.\-_…·,:;'"`~=]{3,}$/.test(t) || /(.)\1{4,}/.test(t) || (w.confidence != null && w.confidence < 35);
+      if (leader) { flush(); continue; }
+      if (cur && bb.x0 - cur.x1 > Math.max(cur.hpx, hpx) * 1.6) flush();
+      const wa = /[bdfhklt0-9A-Z|()\/!?']/.test(t), wd = /[gjpqy()|]/.test(t);
+      const wSize = hpx / (wa && wd ? 0.95 : wa ? 0.73 : wd ? 0.72 : 0.52), wBase = wd ? bb.y1 - 0.21 * wSize : bb.y1;
+      if (!cur) cur = { x0: bb.x0, x1: bb.x1, top: bb.y0, bot: bb.y1, hpx, text: t, bold: !!w.is_bold, serif: !!w.is_serif, sizes: [wSize], bases: [wBase] };
+      else { cur.text += ' ' + t; cur.x1 = bb.x1; cur.top = Math.min(cur.top, bb.y0); cur.bot = Math.max(cur.bot, bb.y1); cur.hpx = Math.max(cur.hpx, hpx); cur.sizes.push(wSize); cur.bases.push(wBase); }
+    }
+    flush();
+  }
+  return raw.map((r, i) => {
+    const med = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+    const sizePx = med(r.sizes);            // font size from each word's ink height (middle value)
+    const basePx = med(r.bases);
+    return { i, x: r.x0 / sc, w: (r.x1 - r.x0) / sc, base: basePx / sc, h: sizePx / sc, text: r.text, fam: r.serif ? 'serif' : 'sans', bold: r.bold, ocr: true, top: r.top / sc, bot: r.bot / sc };
+  }).filter(r => r.h > 3 && r.h < 200);
+}
+async function ocrPage(pn) {
+  if (ed.ocr[pn]) return;
+  const my = ed.token; ed.ocr[pn] = 'running'; showOcrHint(pn, 0);
+  try {
+    const page = await ed.doc.getPage(pn); const v1 = page.getViewport({ scale: 1 });
+    const c = await renderPdfPage(ed.doc, pn, Math.min(4, 2200 / Math.max(v1.width, v1.height)));
+    const sc = c.width / v1.width;
+    docFilter(c, 'enhance');
+    const langEl = document.querySelector('[data-k="ocrlang"]');
+    const w = await getOcr(langEl ? langEl.value : 'eng', () => showOcrHint(pn, 0, true));
+    ocrLog = m => { if (m && m.status === 'recognizing text' && my === ed.token) showOcrHint(pn, m.progress); };
+    const r = await w.recognize(c, {}, { text: true, blocks: true });
+    ocrLog = null;
+    if (my !== ed.token) return;
+    ed.runs[pn] = ocrRuns(ocrLines(r.data), sc);
+    ed.sizes[pn] = ed.runs[pn].map(x => [x.base, x.h]);
+    ed.ocr[pn] = 'done';
+    if (pn === ed.pageNo) {
+      if (ed.runs[pn].length && ed.mode === 'text' && !ed.objs.some(o => o.page === pn)) { ed.mode = 'edit'; refreshMode(); }
+      showOcrHint(pn); drawObjs();
+    }
+  } catch (e) {
+    ocrLog = null;
+    if (my !== ed.token) return;
+    ed.ocr[pn] = 'failed'; showOcrHint(pn);
+  }
+}
 const ED_MODES = {
   edit: ['✏️', 'Edit text', 'Tap any text to change it. Tap an empty spot or a dotted line to type new text.'],
   text: ['🔤', 'Add text', 'Tap where you want to type (e.g. on a dotted line).'],
@@ -1249,14 +1319,14 @@ const ED_MODES = {
   move: ['👆', 'Select', 'Tap an item to move, resize or delete it.']
 };
 function edModes() {
-  return ed.tool === 'sign-pdf' ? ['sig', 'date', 'text', 'img', 'move'] : ed.isImage ? ['text', 'check', 'cross', 'date', 'white', 'hl', 'sig', 'img', 'move'] : ['edit', 'text', 'check', 'cross', 'date', 'white', 'hl', 'sig', 'img', 'move'];
+  return ed.tool === 'sign-pdf' ? ['sig', 'date', 'text', 'img', 'move'] : ['edit', 'text', 'check', 'cross', 'date', 'white', 'hl', 'sig', 'img', 'move'];
 }
 function renderEditor() {
   const box = $('#extra'); if (!box || !ed.doc) return;
   const nWid = ed.fields.length;
   box.innerHTML = '<div class="edtools" role="toolbar">' + edModes().map(m => '<button class="chip mode' + (ed.mode === m ? ' on' : '') + '" data-mode="' + m + '" aria-pressed="' + (ed.mode === m) + '">' + ED_MODES[m][0] + ' ' + esc(T(ED_MODES[m][1])) + '</button>').join('') +
     '<button class="chip" id="edundo" aria-label="Undo">↶ ' + esc(T('Undo')) + '</button></div>' +
-    '<p class="modehint" id="modehint">' + esc(T(ED_MODES[ed.mode][2])) + '</p>' +
+    '<p class="modehint" id="modehint">' + esc(T(ED_MODES[ed.mode][2])) + '</p><p class="ocrhint" id="ocrhint" hidden></p>' +
     (nWid ? '<p class="fnote">📝 ' + esc(T('This PDF has fillable boxes – tap the blue boxes to fill them.')) + '</p>' : '') +
     '<div class="pgnav"><button class="ib" id="pprev" aria-label="Previous page"' + (ed.pageNo <= 1 ? ' disabled' : '') + '>◀</button><span>' + esc(T('Page')) + ' ' + ed.pageNo + ' / ' + ed.n + '</span><button class="ib" id="pnext" aria-label="Next page"' + (ed.pageNo >= ed.n ? ' disabled' : '') + '>▶</button>' +
     '<span class="zoom"><button class="ib" id="zout" aria-label="Zoom out"' + ((ed.zoom || 1) <= 1 ? ' disabled' : '') + '>−</button><b>' + Math.round((ed.zoom || 1) * 100) + '%</b><button class="ib" id="zin" aria-label="Zoom in"' + ((ed.zoom || 1) >= 3 ? ' disabled' : '') + '>＋</button></span></div>' +
@@ -1302,7 +1372,7 @@ async function drawEdPage() {
   await page.render({ canvasContext: tmp.getContext('2d'), viewport: vp }).promise;
   if (my !== edRender) return;
   cv.width = tmp.width; cv.height = tmp.height; cv.getContext('2d').drawImage(tmp, 0, 0);
-  if (ed.tool === 'edit-pdf' && !ed.isImage) await pageRuns(ed.pageNo);
+  if (ed.tool === 'edit-pdf') { await pageRuns(ed.pageNo); if (!ed.runs[ed.pageNo].length && !ed.ocr[ed.pageNo]) ocrPage(ed.pageNo); else showOcrHint(ed.pageNo); }
   await pageWidgets(ed.pageNo);
   drawObjs();
 }
@@ -1354,6 +1424,7 @@ function editRun(i) {
   snap();
   const vp = ed.vp[ed.pageNo], fi = fontInfo(ed.pageNo, run), col = sampleColors(run);
   const o = { id: uid(), page: ed.pageNo, type: 'etext', run: i, text: run.text, orig: run.text, x: run.x / vp.width, base: run.base / vp.height, w: run.w / vp.width, h: run.h / vp.height, fsPt: run.h, fam: fi.fam, bold: fi.bold, italic: fi.italic, ink: col.ink, bg: col.bg };
+  if (run.ocr) { const m = run.h * 0.18; o.box = [(run.x - m) / vp.width, (run.top - m) / vp.height, (run.w + 2 * m) / vp.width, (run.bot - run.top + 2 * m) / vp.height]; }
   ed.objs.push(o); ed.sel = o.id; drawObjs(); focusText(o);
 }
 function drawRect(e, type, nx, ny, r) {
@@ -1404,6 +1475,7 @@ function drawObjs() {
     if (o.type === 'text') { html += '<div class="eobj etext' + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;font-size:' + (o.fs * W) + 'px;color:' + ED_COLORS[o.color] + '"><span class="emove" aria-label="Move">✥</span><div class="etxt" contenteditable="true" spellcheck="false" data-ph="' + esc(T('Type here')) + '">' + esc(o.text).replace(/\n/g, '<br>') + '</div></div>'; continue; }
     if (o.type === 'etext') {
       const k = W / vp.width, fpx = o.fsPt * k;
+      if (o.box) html += '<div class="ecover" style="left:' + o.box[0] * 100 + '%;top:' + o.box[1] * 100 + '%;width:' + o.box[2] * 100 + '%;height:' + o.box[3] * 100 + '%;background:' + o.bg + '"></div>';
       html += '<div class="eobj eedit' + sel + '" data-oid="' + o.id + '" style="left:' + (o.x * 100) + '%;top:' + ((o.base * H - fpx * 0.95) / H * 100) + '%;min-width:' + (o.w * 100 + 0.4) + '%;height:' + (fpx * 1.25) + 'px;background:' + o.bg + '"><div class="etxt" contenteditable="true" spellcheck="false" style="font-family:' + FAM_CSS[o.fam] + ';font-size:' + fpx + 'px;line-height:' + fpx + 'px;padding-top:' + (fpx * 0.1) + 'px;font-weight:' + (o.bold ? 700 : 400) + ';font-style:' + (o.italic ? 'italic' : 'normal') + ';color:' + o.ink + '">' + esc(o.text) + '</div></div>';
       continue;
     }
@@ -1442,7 +1514,7 @@ function markSel() {
   if (!o) { bar.innerHTML = ''; return; }
   const txt = o.type === 'text', et = o.type === 'etext';
   bar.innerHTML = (txt || et ? '<button class="chip" data-s="smaller" aria-label="Smaller text">A−</button><button class="chip" data-s="bigger" aria-label="Bigger text">A+</button>' : '') +
-    (et ? '<button class="chip' + (o.bold ? ' on' : '') + '" data-s="bold" aria-label="Bold"><b>B</b></button><button class="chip' + (o.italic ? ' on' : '') + '" data-s="italic" aria-label="Italic"><i>I</i></button>' : '') +
+    (et ? '<button class="chip" data-s="font" aria-label="Change font" title="' + esc(T('Change font')) + '" style="font-family:' + FAM_CSS[o.fam].replace(/"/g, '') + '">Aa</button><button class="chip' + (o.bold ? ' on' : '') + '" data-s="bold" aria-label="Bold"><b>B</b></button><button class="chip' + (o.italic ? ' on' : '') + '" data-s="italic" aria-label="Italic"><i>I</i></button>' : '') +
     (txt || et ? Object.keys(ED_COLORS).map(c => '<button class="dot' + ((txt ? o.color === c : o.ink === ED_COLORS[c]) ? ' on' : '') + '" data-s="c-' + c + '" style="background:' + ED_COLORS[c] + '" aria-label="' + c + '"></button>').join('') : '') +
     (o.type === 'sig' ? '<button class="chip" data-s="newsig">✍ ' + esc(T('New signature')) + '</button>' : '') +
     (et ? '<button class="chip" data-s="revert">↺ ' + esc(T('Original')) + '</button>' : '') +
@@ -1453,6 +1525,7 @@ function markSel() {
     else if (a === 'smaller') { if (txt) o.fs = Math.max(0.006, o.fs / 1.12); else o.fsPt = Math.max(4, o.fsPt / 1.12); }
     else if (a === 'bigger') { if (txt) o.fs = Math.min(0.12, o.fs * 1.12); else o.fsPt = Math.min(72, o.fsPt * 1.12); }
     else if (a === 'bold') o.bold = !o.bold;
+    else if (a === 'font') o.fam = { sans: 'serif', serif: 'mono', mono: 'sans' }[o.fam];
     else if (a === 'italic') o.italic = !o.italic;
     else if (a === 'newsig') { ed.undo.pop(); sigMaker(null, o); return; }
     else if (a.startsWith('c-')) { if (txt) o.color = a.slice(2); else o.ink = ED_COLORS[a.slice(2)]; }
@@ -1627,7 +1700,8 @@ async function runEditPdf(files, o, st) {
       if (ob.type === 'etext' && ob.text !== ob.orig) {
         const size = ob.fsPt, fkey = stdFont(ob), font = await getFont(fkey);
         let newW = 0; try { newW = WIN_ANSI_OK.test(ob.text) ? font.widthOfTextAtSize(ob.text, size) : ob.text.length * size * 0.55; } catch (e) {}
-        const X = ob.x * vp.width - 1, top = ob.base * vp.height - ob.h * vp.height * 0.95 - 0.5, W = Math.max(ob.w * vp.width, newW) + 2, H = ob.h * vp.height * 1.25 + 1;
+        let X = ob.x * vp.width - 1, top = ob.base * vp.height - ob.h * vp.height * 0.95 - 0.5, W = Math.max(ob.w * vp.width, newW) + 2, H = ob.h * vp.height * 1.25 + 1;
+        if (ob.box) { X = Math.min(X, ob.box[0] * vp.width); const t2 = ob.box[1] * vp.height, b2 = (ob.box[1] + ob.box[3]) * vp.height; H = Math.max(top + H, b2) - Math.min(top, t2); top = Math.min(top, t2); W = Math.max(W, ob.box[2] * vp.width, newW + 2); }
         const bl = Pt(X, top + H);
         page.drawRectangle({ x: bl[0], y: bl[1], width: W, height: H, rotate: rot, color: hexRgb(ob.bg), borderWidth: 0 });
       }
@@ -1905,8 +1979,8 @@ const TOOLS = [
   { id: 'sign-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'SIGN', title: 'Sign PDF', desc: 'Draw, type or upload your signature and place it on the PDF.', seo: 'Sign PDF Online Free – Add Signature to PDF', accept: PDF_ACCEPT + ',' + IMG_ACCEPT, hint: 'PDF or photo of a document', multi: false, btn: 'Save signed PDF', run: runEditPdf, onFiles: editorLoad,
     opts: [{ k: 'out', label: 'Save as', type: 'select', options: [['pdf', 'PDF'], ['jpg', 'JPG image']] }] },
   { id: 'edit-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'EDIT · FILL', title: 'Edit & fill PDF', desc: 'Change text in a PDF and fill any form – PDF or photo. Add ticks, dates and signatures.', seo: 'Edit PDF Text and Fill PDF Forms Online Free', accept: PDF_ACCEPT + ',' + IMG_ACCEPT, hint: 'PDF, or photo / scan of a form', multi: false, btn: 'Save PDF', run: runEditPdf, onFiles: editorLoad,
-    opts: [{ k: 'out', label: 'Save as', type: 'select', options: [['pdf', 'PDF'], ['jpg', 'JPG image']] }, { k: 'flatten', label: 'Form fields after saving', type: 'select', options: [['keep', 'Stay editable'], ['flatten', 'Locked (cannot be changed)']], hint: 'Only matters if the PDF has fillable form fields' }],
-    note: 'Edit text: the old words are covered with the page colour and your new words are written on top in a matching font. White-out and edited text only hide the old text visually – not secure for removing private information. Scanned pages and photos have no editable text – use Add text and White-out.' },
+    opts: [{ k: 'out', label: 'Save as', type: 'select', options: [['pdf', 'PDF'], ['jpg', 'JPG image']] }, { k: 'ocrlang', label: 'Text language in photos / scans', type: 'select', options: [['eng', 'English'], ['eng+hin', 'English + Hindi'], ['eng+guj', 'English + Gujarati']], hint: 'Used to read text in photos and scanned pages so you can edit it' }, { k: 'flatten', label: 'Form fields after saving', type: 'select', options: [['keep', 'Stay editable'], ['flatten', 'Locked (cannot be changed)']], hint: 'Only matters if the PDF has fillable form fields' }],
+    note: 'Edit text: the old words are covered with the page colour and your new words are written on top in a matching font. Photos and scans are read automatically (OCR) so their text can be edited too – font matching is approximate (use Aa to switch font). Edited text and white-out only hide the old text visually – not secure for removing private information.' },
   { id: 'compress-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'COMPRESS', title: 'Compress PDF', desc: 'Make PDFs smaller – choose a level or a target KB.', seo: 'Compress PDF to 100 KB, 200 KB, 500 KB', accept: PDF_ACCEPT, hint: 'PDF files', multi: true, btn: 'Compress PDF',
     opts: [{ k: 'method', label: 'Method', type: 'select', options: [['smart', 'Smart – keep text sharp (recommended)'], ['image', 'Maximum – turn pages into images']] }, { k: 'level', label: 'Compression', type: 'select', options: [['medium', 'Medium (recommended)'], ['low', 'Low (best quality)'], ['strong', 'Strong'], ['extreme', 'Extreme (smallest)']] }, { k: 'target', label: 'Or target size (KB)', type: 'num', ph: 'e.g. 200', hint: 'If filled, the level above is ignored' }], run: runCompress,
     note: 'Smart mode shrinks only the pictures inside the PDF, so text stays sharp and selectable. If a target KB cannot be reached that way, pages are turned into images (text can then no longer be selected). Keep your original file.' },
