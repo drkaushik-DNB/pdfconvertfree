@@ -952,5 +952,13 @@ route(false);
 
 /* Installable app + offline (only on a normal website such as GitHub Pages) */
 if (!inClaude && 'serviceWorker' in navigator && location.protocol === 'https:') {
-  try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) {}
+  try {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // A newer version was just installed: reload once to show it (not on first install, not mid-task)
+      if (hadController && !reloaded && !state.busy) { reloaded = true; location.reload(); }
+    });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  } catch (e) {}
 }
