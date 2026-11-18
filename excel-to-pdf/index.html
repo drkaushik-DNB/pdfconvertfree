@@ -20,7 +20,7 @@ if(v==='mobile'||(v==='auto'&&phone)){
  else if(v==='mobile'&&W>600){de.classList.add('mview','mframe')}
 }else if(v==='desktop'&&W<1000){de.classList.add('dview');de.style.zoom=(W/1024).toFixed(3)}
 }catch(e){}}
-applyView();addEventListener('resize',function(){clearTimeout(window.__vt);window.__vt=setTimeout(applyView,150)});
+applyView();var __vw=innerWidth;addEventListener('resize',function(){if(Math.abs(innerWidth-__vw)<40)return;__vw=innerWidth;clearTimeout(window.__vt);window.__vt=setTimeout(applyView,150)});
 </script>
 <link rel="manifest" href="../manifest.json">
 <link rel="icon" type="image/png" href="../favicon.png">
@@ -376,6 +376,21 @@ button.sitem,a.sitem{cursor:pointer}
 .slist{background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden}
 .slist .sitem{border:0;border-bottom:1px solid #f0f2f7;border-radius:0!important}
 .slist .sitem:last-child{border-bottom:0}
+
+/* tool page: slim app bar, no big banner */
+body.toolpage header{padding:10px 10px 12px}
+.tbar{display:flex;align-items:center;gap:6px}
+.tbar h1{flex:1;min-width:0;margin:0;font-size:18px;font-weight:700;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tback{width:42px;height:42px;flex:0 0 42px;border:0;border-radius:12px;background:rgba(255,255,255,.16);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.tdesc{margin:6px 0 0 48px;font-size:13.5px;opacity:.9}
+body.toolpage main{margin-top:0;padding-top:10px}
+body.toolpage .panel{margin-top:0}
+@media(max-width:719px){.panel{padding:12px}}html.mview .panel{padding:12px}
+.panel.hasfiles.single .drop,.panel.hasfiles.single .pickrow{display:none}
+.panel.hasfiles:not(.single) .drop{padding:12px;margin:10px 0 8px}
+.panel.hasfiles:not(.single) .drop small{display:none}
+@media(max-width:719px){.tdesc{display:none}}
+html.mview .tdesc{display:none}
 </style>
 </head>
 <body data-base="../" data-tool="excel-to-pdf">

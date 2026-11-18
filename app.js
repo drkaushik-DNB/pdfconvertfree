@@ -1513,8 +1513,28 @@ async function drawEdPage() {
 }
 
 function layerPoint(e) { const r = $('#edlayer').getBoundingClientRect(); return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1), r]; }
+function keepInView(el) {
+  try {
+    const vv = window.visualViewport, r = el.getBoundingClientRect(), h = vv ? vv.height : innerHeight, top = vv ? vv.offsetTop : 0;
+    if (r.top < top + 60 || r.bottom > top + h - 20) window.scrollBy({ top: r.top - top - h * 0.3, behavior: 'smooth' });
+  } catch (e) {}
+}
+if (window.visualViewport) visualViewport.addEventListener('resize', () => { const a = document.activeElement; if (a && a.classList && a.classList.contains('etxt')) keepInView(a); });
 function layerDown(e) {
   if (e.target.id !== 'edlayer' && !e.target.classList.contains('erun')) return;
+  const dragModes = ed.mode === 'white' || ed.mode === 'hl' || ed.mode === 'find';
+  if (!dragModes && !e.__tap) { // wait for the finger to lift: a scroll must not add text
+    const L = e.currentTarget, x0 = e.clientX, y0 = e.clientY, t0 = Date.now(), tgt = e.target, id = e.pointerId;
+    const up = ev => {
+      if (ev.pointerId !== id) return; done();
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 10 || Date.now() - t0 > 800) return;
+      layerDown({ __tap: true, target: tgt, currentTarget: L, clientX: ev.clientX, clientY: ev.clientY, pointerId: id, preventDefault() {} });
+    };
+    const done = () => { L.removeEventListener('pointerup', up); L.removeEventListener('pointercancel', done); };
+    L.addEventListener('pointerup', up); L.addEventListener('pointercancel', done);
+    if (ed.mode !== 'move') e.preventDefault(); // no stray mouse events that would close the keyboard
+    return;
+  }
   if (ed.mode !== 'move') e.preventDefault(); // keep keyboard focus on the new text box
   const focused = document.activeElement && document.activeElement.classList.contains('etxt');
   const hadSel = !!ed.sel;
@@ -1689,6 +1709,8 @@ function drawObjs() {
     const inner = (o.type === 'sig' || o.type === 'img') ? '<img src="' + o.img + '" alt="" draggable="false">' : o.type === 'check' ? '<svg viewBox="0 0 1 1"><path d="M.1 .5 L.4 .85 L.9 .15" /></svg>' : o.type === 'cross' ? '<svg viewBox="0 0 1 1"><path d="M.15 .15 L.85 .85 M.15 .85 L.85 .15" /></svg>' : '';
     html += '<div class="eobj e' + o.type + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;width:' + o.w * 100 + '%;height:' + hpx + 'px">' + inner + '<span class="ersz" aria-label="Resize"></span></div>';
   }
+  setTimeout(() => { if (typeof keepId === 'string') { const o = ed.objs.find(x => x.id === keepId); if (o && document.activeElement !== document.querySelector('[data-oid="' + keepId + '"] .etxt')) focusText(o); } }, 0);
+  const ae = document.activeElement, keepId = ae && ae.classList && ae.classList.contains('etxt') && ae.closest('[data-oid]') ? ae.closest('[data-oid]').dataset.oid : null;
   L.innerHTML = html;
   L.querySelectorAll('.eobj').forEach(el => {
     const o = ed.objs.find(x => x.id === el.dataset.oid);
@@ -1696,7 +1718,10 @@ function drawObjs() {
       const t = el.querySelector('.etxt');
       t.oninput = () => { o.text = t.innerText.replace(/\n$/, ''); if (o.type === 'etext') o.text = o.text.replace(/\n/g, ' '); };
       t.onkeydown = ev => { if (o.type === 'etext' && ev.key === 'Enter') { ev.preventDefault(); t.blur(); } };
-      t.onfocus = () => { if (ed.sel !== o.id) { ed.sel = o.id; markSel(); } };
+      t.onfocus = () => { if (ed.sel !== o.id) { ed.sel = o.id; markSel(); } setTimeout(() => keepInView(t), 350); };
+      t.onblur = () => setTimeout(() => {
+        if (o.type === 'text' && !(o.text || '').trim() && document.activeElement !== t && ed.objs.includes(o)) { ed.objs = ed.objs.filter(x => x !== o); if (ed.sel === o.id) ed.sel = null; drawObjs(); }
+      }, 250);
       t.onpointerdown = ev => ev.stopPropagation();
       const mv = el.querySelector('.emove'); if (mv) mv.onpointerdown = e => startDrag(e, o, 'move');
       if (o.type === 'etext') el.onpointerdown = e => { if (e.target === el) startDrag(e, o, 'move'); };
@@ -2228,8 +2253,15 @@ function goHome() {
   else location.hash = 'home';
 }
 function renderHeader(tool) {
-  $('#hdr').innerHTML = '<div class="topbar">' + (tool ? '<button class="back" id="back">← ' + esc(T('All tools')) + '</button>' : '<span></span>') + langPicker() + '</div>' +
-    (tool ? '<div class="logo"><img src="' + BASE + 'logo-96.png" alt=""><h1>' + esc(T(tool.title)) + '</h1></div><p>' + esc(T(tool.desc)) + '</p>'
+  document.body.classList.toggle('toolpage', !!tool);
+  if (tool) {
+    $('#hdr').innerHTML = '<div class="tbar"><button class="tback" id="back" aria-label="' + esc(T('All tools')) + '">' + ico('back', 24) + '</button><h1>' + esc(T(tool.title)) + '</h1>' + langPicker() + '</div><p class="tdesc">' + esc(T(tool.desc)) + '</p>';
+    $('#back').onclick = goHome;
+    document.querySelectorAll('[data-lang]').forEach(x => x.onclick = () => { LANG = x.dataset.lang; try { localStorage.setItem('pdfc-lang', LANG); } catch (e) {} document.documentElement.lang = LANG; route(true); });
+    return;
+  }
+  $('#hdr').innerHTML = '<div class="topbar">' + '<span></span>' + langPicker() + '</div>' +
+    (false ? ''
       : '<div class="logo"><img src="' + BASE + 'logo-96.png" alt=""><h1>PDF Convert Free</h1></div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
         (installEvt ? ' <button class="privacy install" id="install">⬇ ' + esc(T('Install app')) + '</button>' : ''));
   const b = $('#back'); if (b) b.onclick = goHome;
@@ -2331,6 +2363,8 @@ function renderFiles() {
     if (state.tool.onFiles) state.tool.onFiles();
   });
   $('#go').disabled = !n || state.busy;
+  const panel = ul.closest('.panel'); if (panel) { panel.classList.toggle('hasfiles', n > 0); panel.classList.toggle('single', !state.tool.multi); }
+  const add = $('#drop'); if (add && state.tool.multi) { const b = add.querySelector('b'); if (b) b.textContent = n ? '＋ ' + T('Add more files') : (T('Tap to choose files')); }
 }
 function setStatus(msg, kind, frac) {
   const s = $('#status'); if (!s) return;
@@ -2468,6 +2502,7 @@ async function preview(r) {
 
 /* ---------- App shell: tabs, icons, Files store, Settings, live camera ---------- */
 const UI_ICONS = {
+  back: '<path d="M15 18l-6-6 6-6"/>',
   home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
