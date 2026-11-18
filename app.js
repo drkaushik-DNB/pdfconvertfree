@@ -617,6 +617,7 @@ async function scanLoad(keep) {
 function quadSvg(q) { return '<svg viewBox="0 0 1 1" preserveAspectRatio="none"><polygon points="' + q.map(p => p.join(',')).join(' ') + '" /></svg>'; }
 function renderScanGrid() {
   const box = $('#extra'); if (!box) return;
+  const fsel = $('[data-k="filter"]'); if (fsel && fsel.parentElement && !state.files.length) fsel.parentElement.classList.remove('hide');
   const items = state.files.map((f, i) => ({ f, i, s: scanQuads.get(f.file) }));
   if (!items.length) { box.innerHTML = ''; return; }
   box.innerHTML = '<p class="hint2">' + esc(T('Check each page. Tap "Adjust corners" if the blue frame is not on the paper edges.')) + '</p><div class="sgrid">' + items.map(({ f, i, s }) => '<div class="scard">' +
@@ -624,6 +625,7 @@ function renderScanGrid() {
     '<div class="pnum">' + (i + 1) + ' · <small>' + esc(s ? (s.manual ? T('Adjusted') : s.auto ? T('Auto-detected') : T('Full photo')) : T('Checking…')) + '</small></div>' +
     (s && !s.bad ? '<button class="chip wide" data-adj="' + i + '">✥ ' + esc(T('Adjust corners')) + '</button>' : '') + '</div>').join('') + '</div>';
   box.querySelectorAll('[data-adj]').forEach(b => b.onclick = () => cornerEditor(state.files[+b.dataset.adj].file));
+  renderLookPreviews().catch(() => {});
 }
 function cornerEditor(file) {
   const s = scanQuads.get(file); if (!s) return;
@@ -646,7 +648,7 @@ function cornerEditor(file) {
   });
   $('#cfull').onclick = () => { q = [[0, 0], [1, 0], [1, 1], [0, 1]]; draw(); };
   $('#cauto').onclick = async () => { const c = await fileToCanvas(file, 1, '#ffffff', 900); const a = detectQuad(c); if (a) { q = a; draw(); } else toast(T('Could not find the page edges – drag the corners yourself.')); };
-  $('#cdone').onclick = () => { s.q = q; s.manual = true; closeModal(); renderScanGrid(); };
+  $('#cdone').onclick = () => { s.q = q; s.manual = true; lookCache.delete(file); closeModal(); renderScanGrid(); };
   draw();
 }
 /* OCR clean-up: enlarge small images, even out lighting, straighten slight tilt */
@@ -2247,24 +2249,6 @@ function card(t) {
   const s = SECTIONS.find(x => x.id === t.cat);
   return '<a class="card' + (t.hot ? ' hot' : '') + '" href="' + toolHref(t.id) + '" data-id="' + t.id + '">' + (t.hot ? '<span class="hottag">⭐ ' + esc(T('Popular')) + '</span>' : '') + '<span class="badge" style="background:' + s.color + '">' + esc(t.badge) + '</span><b>' + esc(T(t.title)) + '</b><small>' + esc(T(t.desc)) + '</small></a>';
 }
-function renderHome() {
-  state.tool = null; renderHeader(null); setSeo(null);
-  const recent = getRecent().map(id => TOOLS.find(t => t.id === id));
-  $('#main').innerHTML = '<div class="search"><input type="search" id="q" placeholder="' + esc(T('Search tools… e.g. compress, jpg, word')) + '" aria-label="' + esc(T('Search tools')) + '" autocomplete="off"></div>' +
-    '<div id="homelist">' + (recent.length ? '<h2>' + esc(T('Recently used')) + '</h2><div class="grid">' + recent.map(card).join('') + '</div>' : '') +
-    SECTIONS.map(s => '<h2>' + esc(T(s.title)) + '</h2><div class="grid">' + TOOLS.filter(t => t.cat === s.id).map(card).join('') + '</div>').join('') + '</div>' +
-    '<div id="qres" hidden></div>';
-  const q = $('#q');
-  q.oninput = () => {
-    const v = q.value.trim().toLowerCase();
-    $('#homelist').hidden = !!v; const box = $('#qres'); box.hidden = !v;
-    if (!v) return;
-    const words = v.split(/\s+/);
-    const hits = TOOLS.filter(t => { const hay = [t.title, t.desc, t.badge, t.seo, T(t.title), T(t.desc), t.id.replace(/-/g, ' ')].join(' ').toLowerCase(); return words.every(w => hay.includes(w)); });
-    box.innerHTML = hits.length ? '<div class="grid">' + hits.map(card).join('') + '</div>' : '<p class="mute center">' + esc(T('No tool found. Try another word.')) + '</p>';
-  };
-}
-
 function optField(o) {
   let f;
   const id = 'opt-' + o.k;
@@ -2294,6 +2278,9 @@ function renderTool(t, keep) {
     '<div class="status" id="status" role="status" aria-live="polite"></div><div class="results" id="results"></div>' +
     (t.note ? '<div class="note">' + esc(T(t.note)) + '</div>' : '') + '</div>';
   for (const id of ['#fi', '#fic']) { const fi = $(id); if (fi) fi.onchange = () => { addFiles(fi.files); fi.value = ''; }; }
+  const camLabel = document.querySelector('.drop.cam');
+  if (camLabel) camLabel.addEventListener('click', e => { if (canLiveCamera() && e.target.id !== 'fic') { e.preventDefault(); openCamera(); } });
+  if (!keep && /scan/.test(t.id)) { const fsel = $('[data-k="filter"]'); if (fsel) { fsel.value = getSet('look', 'enhance'); fsel.addEventListener('change', renderLookPreviews); } }
   const drop = $('#drop');
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
@@ -2379,6 +2366,7 @@ async function run() {
     if (state.cancel) throw new CancelError();
     state.results = out;
     showResults();
+    keepResults(out, t);
     setStatus(out.msg || (T('Done!') + ' ' + out.length + ' ' + T(out.length > 1 ? 'files ready' : 'file ready')), 'ok');
   } catch (e) {
     if (state.tool !== t) return;
@@ -2478,9 +2466,365 @@ async function preview(r) {
   } catch (e) { if (my === pvToken) body.innerHTML = '<p class="center">⚠️ ' + esc(T('Preview is not available for this file, but you can still save it.')) + '</p>'; }
 }
 
+/* ---------- App shell: tabs, icons, Files store, Settings, live camera ---------- */
+const UI_ICONS = {
+  home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/>',
+  doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  resize: '<path d="M4 9V4h5M20 15v5h-5M4 4l7 7M20 20l-7-7"/>',
+  compress: '<path d="M9 4v5H4M15 20v-5h5M4 9l5-5M20 15l-5 5"/>',
+  merge: '<path d="M7 4v6a5 5 0 0 0 5 5h5"/><path d="M14 12l3 3-3 3"/><path d="M17 4v4"/>',
+  word: '<path d="M6 3h8l4 4v14H6z"/><path d="M9 11l1.2 5 1.8-4 1.8 4 1.2-5"/>',
+  image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.7"/><path d="M21 16l-5-5-8 8"/>',
+  chev: '<path d="M9 6l6 6-6 6"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  flash: '<path d="M13 3L5 13h6l-1 8 8-10h-6z"/>',
+  share: '<circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/><path d="M8.4 13.4l7.2 4.2M15.6 6.4l-7.2 4.2"/>',
+  more: '<circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  star: '<path d="M12 3l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L12 16.8 6.6 19.7l1.1-6.1L3.2 9.4l6.1-.8z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  sign: '<path d="M3 17c3-6 5-9 6-8s-2 7 0 7 3-4 4-4 1 3 3 3 3-2 5-2"/><path d="M3 21h18"/>',
+  ocr: '<path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 9h8M8 12h8M8 15h5"/>',
+  split: '<path d="M6 3h8l4 4v14H6z"/><path d="M4 13h16" stroke-dasharray="2 2"/>',
+  pages: '<rect x="4" y="3" width="11" height="14" rx="1.5"/><path d="M9 21h9a2 2 0 0 0 2-2V8"/>',
+  num: '<path d="M6 3h8l4 4v14H6z"/><path d="M10 17h4M12 13v4"/>',
+  sheet: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M10 3v18"/>',
+  text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
+  download: '<path d="M12 3v12M6.5 10.5L12 16l5.5-5.5M4 20h16"/>',
+  eye: '<path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7"/>'
+};
+const ico = (n, s = 22) => '<svg aria-hidden="true" width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (UI_ICONS[n] || '') + '</svg>';
+const TOOL_ICON = {
+  'image-convert': ['image', '#0891b2'], 'image-resize': ['resize', '#4f46e5'], 'scan-to-pdf': ['scan', '#0891b2'], 'image-scanner': ['camera', '#0e7490'],
+  'image-to-pdf': ['doc', '#7c3aed'], 'pdf-to-image': ['image', '#7c3aed'], 'word-to-pdf': ['doc', '#2563eb'], 'pdf-to-word': ['word', '#2563eb'],
+  'ocr': ['ocr', '#7c3aed'], 'excel-to-pdf': ['sheet', '#15803d'], 'word-to-image': ['image', '#2563eb'], 'image-to-word': ['word', '#7c3aed'],
+  'pdf-to-text': ['text', '#475569'], 'sign-pdf': ['sign', '#dc2626'], 'edit-pdf': ['edit', '#7c3aed'], 'compress-pdf': ['compress', '#dc2626'],
+  'merge-pdf': ['merge', '#dc2626'], 'split-pdf': ['split', '#dc2626'], 'organize-pdf': ['pages', '#dc2626'], 'page-numbers': ['num', '#dc2626']
+};
+const POPULAR = ['scan-to-pdf', 'image-scanner', 'edit-pdf', 'image-resize'];
+const POP_SHORT = { 'scan-to-pdf': 'Photos → clean PDF', 'image-scanner': 'Photos → sharp scans', 'edit-pdf': 'Change text, fill forms', 'image-resize': 'Photo & signature for forms' };
+const QUICK = ['compress-pdf', 'pdf-to-word', 'merge-pdf', 'image-to-pdf', 'sign-pdf', 'ocr'];
+const TABS = ['home', 'tools', 'files', 'settings'];
+const PLAY_URL = ''; // fill in after the app is published on Google Play
+
+/* settings kept in this browser */
+function getSet(k, d) { try { const v = localStorage.getItem('pdfc-' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } }
+function setSet(k, v) { try { localStorage.setItem('pdfc-' + k, JSON.stringify(v)); } catch (e) {} }
+
+function bottomNav(active) {
+  return '<nav class="bnav" aria-label="Main">' + [['home', 'home', 'Home'], ['tools', 'grid', 'Tools'], ['files', 'folder', 'Files'], ['settings', 'gear', 'Settings']].map(([k, i, l]) =>
+    '<a href="#' + k + '" class="' + (k === active ? 'on' : '') + '"' + (k === active ? ' aria-current="page"' : '') + '><span>' + ico(i, 22) + '</span>' + esc(T(l)) + '</a>').join('') + '</nav>';
+}
+function tabHeader(title) {
+  $('#hdr').innerHTML = '<div class="topbar"><div class="logo small"><img src="' + BASE + 'logo-96.png" alt=""><h1>' + esc(T(title)) + '</h1></div>' + langPicker() + '</div>';
+  bindLang();
+}
+function bindLang() {
+  document.querySelectorAll('[data-lang]').forEach(x => x.onclick = () => {
+    LANG = x.dataset.lang; try { localStorage.setItem('pdfc-lang', LANG); } catch (e) {}
+    document.documentElement.lang = LANG; route(true);
+  });
+}
+function iconTile(t, size) {
+  const [i, c] = TOOL_ICON[t.id] || ['doc', '#4f46e5'];
+  return '<span class="itile" style="background:' + c + '">' + ico(i, size || 24) + '</span>';
+}
+function toolRow(t) {
+  const [i, c] = TOOL_ICON[t.id] || ['doc', '#4f46e5'];
+  return '<a class="trow" href="' + toolHref(t.id) + '"><span class="ticon" style="background:' + c + '1a;color:' + c + '">' + ico(i, 22) + '</span><span class="ttext"><b>' + esc(T(t.title)) + '</b><small>' + esc(T(t.desc)) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>';
+}
+function bindSearch(onEmpty) {
+  const q = $('#q'); if (!q) return;
+  q.oninput = () => {
+    const v = q.value.trim().toLowerCase();
+    $('#homelist').hidden = !!v; const box = $('#qres'); box.hidden = !v;
+    if (!v) return;
+    const words = v.split(/\s+/);
+    const hits = TOOLS.filter(t => { const hay = [t.title, t.desc, t.badge, t.seo, T(t.title), T(t.desc), t.id.replace(/-/g, ' ')].join(' ').toLowerCase(); return words.every(w => hay.includes(w)); });
+    box.innerHTML = hits.length ? '<div class="tlist">' + hits.map(toolRow).join('') + '</div>' : '<p class="mute center">' + esc(T('No tool found. Try another word.')) + '</p>';
+  };
+}
+function renderHome() {
+  state.tool = null; setSeo(null); document.body.classList.add('tabbed');
+  $('#hdr').innerHTML = '<div class="topbar"><div class="logo small"><img src="' + BASE + 'logo-96.png" alt=""><h1>PDF Convert Free</h1></div>' + langPicker() + '</div>' +
+    '<label class="hsearch">' + ico('search', 20) + '<input type="search" id="q" placeholder="' + esc(T('Search tools… e.g. compress, jpg, word')) + '" aria-label="' + esc(T('Search tools')) + '" autocomplete="off"></label>' +
+    '<p class="hpriv">' + ico('lock', 15) + esc(T('Files never leave your device')) + (installEvt ? ' <button class="hinstall" id="install">' + ico('download', 15) + esc(T('Install app')) + '</button>' : '') + '</p>';
+  bindLang();
+  const ins = $('#install'); if (ins) ins.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderHome(); };
+  const recent = getRecent().map(id => TOOLS.find(t => t.id === id)).filter(t => t && !POPULAR.includes(t.id)).slice(0, 3);
+  const quick = [...recent, ...QUICK.map(id => TOOLS.find(t => t.id === id)).filter(t => !recent.includes(t))].slice(0, 6);
+  $('#main').innerHTML = '<div id="homelist">' +
+    '<h2 class="sh hot">' + ico('star', 16) + esc(T('Popular')) + '</h2><div class="pgrid2">' + POPULAR.map(id => TOOLS.find(t => t.id === id)).map(t =>
+      '<a class="pcard" href="' + toolHref(t.id) + '">' + iconTile(t) + '<b>' + esc(T(t.title)) + '</b><small>' + esc(T(POP_SHORT[t.id] || t.desc)) + '</small></a>').join('') + '</div>' +
+    '<div class="shrow"><h2 class="sh">' + esc(T(recent.length ? 'Recent & quick tools' : 'Quick tools')) + '</h2><a href="#tools">' + esc(T('See all')) + ' ' + TOOLS.length + '</a></div>' +
+    '<div class="tlist">' + quick.map(toolRow).join('') + '</div></div><div id="qres" hidden></div>' +
+    '<button class="fab" id="fab" aria-label="' + esc(T('Scan a document')) + '">' + ico('camera', 28) + '</button>' + bottomNav('home');
+  bindSearch();
+  $('#fab').onclick = () => startScan('scan-to-pdf');
+}
+function renderTools() {
+  state.tool = null; document.body.classList.add('tabbed');
+  document.title = 'All tools | PDF Convert Free';
+  tabHeader('All tools');
+  $('#main').innerHTML = '<div class="search"><input type="search" id="q" placeholder="' + esc(T('Search tools… e.g. compress, jpg, word')) + '" aria-label="' + esc(T('Search tools')) + '" autocomplete="off"></div>' +
+    '<div id="homelist">' + SECTIONS.map(s => '<h2>' + esc(T(s.title)) + '</h2><div class="grid">' + TOOLS.filter(t => t.cat === s.id).map(card).join('') + '</div>').join('') + '</div><div id="qres" hidden></div>' + bottomNav('tools');
+  bindSearch();
+}
+function startScan(toolId) {
+  if (location.hash !== '#' + toolId) location.hash = toolId;
+  route(false);
+  if (canLiveCamera()) openCamera(); else { const fic = $('#fic'); if (fic) fic.click(); }
+}
+
+/* ---------- Files: results kept on this device (IndexedDB) ---------- */
+let fdb = null;
+function filesDb() {
+  if (fdb) return fdb;
+  fdb = new Promise((res, rej) => {
+    try {
+      const r = indexedDB.open('pdfc-files', 1);
+      r.onupgradeneeded = () => { const s = r.result.createObjectStore('files', { keyPath: 'id' }); s.createIndex('ts', 'ts'); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    } catch (e) { rej(e); }
+  });
+  fdb.catch(() => { fdb = null; });
+  return fdb;
+}
+async function fdbAll() {
+  const db = await filesDb();
+  return new Promise((res, rej) => { const q = db.transaction('files').objectStore('files').getAll(); q.onsuccess = () => res(q.result.sort((a, b) => b.ts - a.ts)); q.onerror = () => rej(q.error); });
+}
+async function fdbPut(rec) { const db = await filesDb(); return new Promise((res, rej) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(rec); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
+async function fdbDel(id) { const db = await filesDb(); return new Promise((res, rej) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').delete(id); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
+async function keepResults(out, tool) {
+  if (!getSet('keep', true) || !out || !out.length) return;
+  try {
+    const now = Date.now();
+    for (let i = 0; i < out.length; i++) await fdbPut({ id: now + '-' + i + '-' + Math.random().toString(36).slice(2, 6), name: out[i].name, size: out[i].blob.size, type: out[i].blob.type, tool: tool.id, ts: now + i, info: out[i].info || '', blob: out[i].blob });
+    // keep the newest 60 files and at most ~300 MB
+    const all = await fdbAll(); let total = 0;
+    for (let i = 0; i < all.length; i++) { total += all[i].size; if (i >= 60 || total > 300 * 1048576) await fdbDel(all[i].id); }
+  } catch (e) { /* storage not available here – ignore */ }
+}
+function whenStr(ts) {
+  const d = new Date(ts), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return T('Today') + ', ' + t;
+  if (d.toDateString() === y.toDateString()) return T('Yesterday') + ', ' + t;
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+let filesTab = 'recent';
+async function renderFilesTab() {
+  state.tool = null; document.body.classList.add('tabbed');
+  document.title = 'Files | PDF Convert Free';
+  tabHeader('Files');
+  $('#main').innerHTML = '<div class="ftabs" role="tablist">' + [['recent', 'Recent'], ['scans', 'Scans'], ['pdf', 'PDFs'], ['img', 'Images']].map(([k, l]) =>
+    '<button role="tab" aria-selected="' + (k === filesTab) + '" class="chip' + (k === filesTab ? ' on' : '') + '" data-ft="' + k + '">' + esc(T(l)) + '</button>').join('') + '</div>' +
+    '<ul class="flist2" id="flist2"><li class="mute">' + esc(T('Loading…')) + '</li></ul><p class="fprivacy">' + ico('lock', 16) + esc(T('Saved only on this phone – never uploaded')) + '</p>' + bottomNav('files');
+  document.querySelectorAll('[data-ft]').forEach(b => b.onclick = () => { filesTab = b.dataset.ft; renderFilesTab(); });
+  let all;
+  try { all = await fdbAll(); } catch (e) { $('#flist2').innerHTML = '<li class="fempty">' + esc(T('Files cannot be kept in this browser.')) + '</li>'; return; }
+  if (state.tool || location.hash !== '#files') return;
+  const ext = n => n.split('.').pop().toLowerCase();
+  const list = all.filter(r => filesTab === 'recent' ? true : filesTab === 'scans' ? /scan/.test(r.tool) : filesTab === 'pdf' ? ext(r.name) === 'pdf' : /^(jpg|jpeg|png|webp)$/.test(ext(r.name)));
+  const ul = $('#flist2');
+  if (!list.length) { ul.innerHTML = '<li class="fempty">' + ico('folder', 36) + '<b>' + esc(T('No files yet')) + '</b><span>' + esc(T('Files you create appear here, so you can open or share them again later.')) + '</span><a class="save" href="#home">' + esc(T('Start with a tool')) + '</a></li>'; return; }
+  ul.innerHTML = list.map(r => {
+    const e = ext(r.name);
+    return '<li><button class="fitem" data-open="' + r.id + '"><span class="ic" style="background:' + (EXT_COLOR[e] || (/^(jpg|jpeg|png|webp)$/.test(e) ? '#0891b2' : '#64748b')) + '">' + esc(e.toUpperCase()) + '</span><span class="fmeta"><b>' + esc(r.name) + '</b><small>' + esc(whenStr(r.ts)) + ' · ' + fmtSize(r.size) + '</small></span></button>' +
+      (canShareFile({ blob: r.blob, name: r.name }) ? '<button class="fbtn share" data-sh2="' + r.id + '" aria-label="' + esc(T('Share')) + ' ' + esc(r.name) + '">' + ico('share', 19) + '</button>' : '') +
+      '<button class="fbtn" data-more="' + r.id + '" aria-label="' + esc(T('More options')) + ' ' + esc(r.name) + '">' + ico('more', 20) + '</button></li>';
+  }).join('');
+  const byId = id => list.find(r => r.id === id);
+  ul.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { const r = byId(b.dataset.open); preview({ name: r.name, blob: r.blob }); });
+  ul.querySelectorAll('[data-sh2]').forEach(b => b.onclick = () => { const r = byId(b.dataset.sh2); shareFile({ name: r.name, blob: r.blob }); });
+  ul.querySelectorAll('[data-more]').forEach(b => b.onclick = () => {
+    const r = byId(b.dataset.more);
+    openModal(r.name, '<div class="sheet">' +
+      '<button data-a="view">' + ico('eye', 20) + esc(T('View')) + '</button>' +
+      '<button data-a="save">' + ico('download', 20) + esc(T('Save')) + '</button>' +
+      (canShareFile({ blob: r.blob, name: r.name }) ? '<button data-a="share">' + ico('share', 20) + esc(T('Share')) + '</button>' : '') +
+      '<button data-a="del" class="danger">' + ico('trash', 20) + esc(T('Delete')) + '</button></div>');
+    document.querySelectorAll('.sheet [data-a]').forEach(x => x.onclick = async () => {
+      const a = x.dataset.a; closeModal();
+      if (a === 'view') preview({ name: r.name, blob: r.blob });
+      else if (a === 'save') saveBlob(r.name, r.blob);
+      else if (a === 'share') shareFile({ name: r.name, blob: r.blob });
+      else { try { await fdbDel(r.id); } catch (e) {} renderFilesTab(); }
+    });
+  });
+}
+
+/* ---------- Settings ---------- */
+async function renderSettings() {
+  state.tool = null; document.body.classList.add('tabbed');
+  document.title = 'Settings | PDF Convert Free';
+  tabHeader('Settings');
+  let used = '';
+  try { const all = await fdbAll(); used = all.length + ' ' + T('files') + ' · ' + fmtSize(all.reduce((a, r) => a + r.size, 0)); } catch (e) { used = T('Not available in this browser'); }
+  if (location.hash !== '#settings') return;
+  const sw = (k, d) => '<button role="switch" class="switch" aria-checked="' + getSet(k, d) + '" data-sw="' + k + '" data-def="' + d + '"><span></span></button>';
+  const item = (i, title, sub, right, attrs) => '<div class="sitem"' + (attrs || '') + '><span class="sicon">' + ico(i, 20) + '</span><span class="stext"><b>' + esc(T(title)) + '</b><small>' + esc(sub) + '</small></span>' + (right || '') + '</div>';
+  const looks = [['enhance', 'Enhanced (white background)'], ['bw', 'Black & white'], ['gray', 'Grayscale'], ['original', 'Original colour']];
+  const lookSel = '<select id="setlook" aria-label="' + esc(T('Default scan look')) + '">' + looks.map(([v, l]) => '<option value="' + v + '"' + (getSet('look', 'enhance') === v ? ' selected' : '') + '>' + esc(T(l)) + '</option>').join('') + '</select>';
+  $('#main').innerHTML =
+    '<section class="setcard"><h2>' + esc(T('General')) + '</h2>' +
+      item('globe', 'Language', LANG === 'hi' ? 'हिंदी' : 'English', langPicker()) +
+      item('folder', 'Keep my files', T('Show created files in the Files tab'), sw('keep', true)) +
+      item('trash', 'Clear saved files', used, '<button class="chip danger" id="clearfiles">' + esc(T('Clear')) + '</button>') + '</section>' +
+    '<section class="setcard"><h2>' + esc(T('Scanner')) + '</h2>' +
+      item('camera', 'Auto capture', T('Take the photo when the page is steady'), sw('autocap', true)) +
+      item('scan', 'Default scan look', '', lookSel) + '</section>' +
+    '<section class="setcard"><h2>' + esc(T('About')) + '</h2>' +
+      (installEvt ? item('download', 'Install app', T('Add to your home screen'), '<button class="chip" id="install2">' + esc(T('Install')) + '</button>') : '') +
+      (PLAY_URL ? '<a class="sitem" href="' + PLAY_URL + '"><span class="sicon">' + ico('star', 20) + '</span><span class="stext"><b>' + esc(T('Rate on Play Store')) + '</b><small>' + esc(T('Help others find the app')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>' : '') +
+      '<button class="sitem" id="shareapp"><span class="sicon">' + ico('share', 20) + '</span><span class="stext"><b>' + esc(T('Share app')) + '</b><small>' + esc(T('Send to friends and colleagues')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></button>' +
+      '<a class="sitem" href="' + BASE + 'privacy.html"><span class="sicon">' + ico('shield', 20) + '</span><span class="stext"><b>' + esc(T('Privacy policy')) + '</b><small>' + esc(T('Files never leave your phone')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>' +
+      item('info', 'Version 2.0', 'Made by Dr. Kaushik · PEDIA360') + '</section>' + bottomNav('settings');
+  document.querySelectorAll('.setcard').forEach(sec => { const d = document.createElement('div'); d.className = 'slist'; [...sec.children].filter(c => c.tagName !== 'H2').forEach(c => d.appendChild(c)); sec.appendChild(d); });
+  bindLang();
+  document.querySelectorAll('[data-sw]').forEach(b => b.onclick = () => { const v = !getSet(b.dataset.sw, b.dataset.def === 'true'); setSet(b.dataset.sw, v); b.setAttribute('aria-checked', v); });
+  $('#setlook').onchange = e => setSet('look', e.target.value);
+  $('#clearfiles').onclick = async () => { try { for (const r of await fdbAll()) await fdbDel(r.id); toast(T('Saved files cleared')); } catch (e) {} renderSettings(); };
+  const i2 = $('#install2'); if (i2) i2.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderSettings(); };
+  $('#shareapp').onclick = async () => {
+    const url = 'https://drkaushik-dnb.github.io/pdfconvertfree/';
+    try { if (navigator.share && !inClaude) { await navigator.share({ title: 'PDF Convert Free', text: T('Free PDF, image & Word tools – scan, edit, compress. Files stay on your phone.'), url }); return; } } catch (e) { if (e && e.name === 'AbortError') return; }
+    try { await navigator.clipboard.writeText(url); toast(T('Link copied')); } catch (e) { toast(url); }
+  };
+}
+
+/* ---------- Live camera scanner ---------- */
+function canLiveCamera() { return !inClaude && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext; }
+let cam = null;
+async function openCamera() {
+  if (cam) return;
+  const ov = document.createElement('div'); ov.className = 'camview'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-label', T('Camera'));
+  ov.innerHTML = '<video playsinline muted autoplay></video><canvas class="camov"></canvas><div class="camflash"></div>' +
+    '<div class="camtop"><button class="cbtn" id="camclose" aria-label="' + esc(T('Close')) + '">' + ico('close', 24) + '</button><span></span>' +
+    '<button class="cbtn" id="camtorch" aria-label="' + esc(T('Flash')) + '" hidden>' + ico('flash', 20) + '</button>' +
+    '<button class="cpill" id="camauto" aria-pressed="' + getSet('autocap', true) + '">' + esc(T('Auto capture')) + '</button></div>' +
+    '<p class="camhint" id="camhint">' + esc(T('Point the camera at the page')) + '</p>' +
+    '<div class="cambot"><button class="camdone" id="camdone" aria-label="' + esc(T('Done')) + '"><span class="camthumb" id="camthumb"></span><span class="camcount" id="camcount">0</span></button>' +
+    '<button class="shutter" id="shutter" aria-label="' + esc(T('Take photo')) + '"><span></span></button>' +
+    '<button class="cbtn big" id="camgal" aria-label="' + esc(T('From gallery')) + '">' + ico('image', 24) + '</button></div>';
+  document.body.appendChild(ov); document.body.classList.add('noscroll');
+  const video = ov.querySelector('video'), oc = ov.querySelector('.camov');
+  cam = { ov, video, stream: null, timer: 0, quad: null, hist: [], count: 0, busy: false, lastShot: null, auto: getSet('autocap', true) };
+  const close = () => {
+    if (!cam) return;
+    clearInterval(cam.timer); if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
+    ov.remove(); document.body.classList.remove('noscroll'); cam = null;
+  };
+  $('#camclose').onclick = close;
+  $('#camdone').onclick = close;
+  $('#camgal').onclick = () => { close(); const fi = $('#fi'); if (fi) fi.click(); };
+  $('#camauto').onclick = () => { cam.auto = !cam.auto; setSet('autocap', cam.auto); $('#camauto').setAttribute('aria-pressed', cam.auto); };
+  $('#shutter').onclick = () => capture();
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 3840 }, height: { ideal: 2160 } } });
+  } catch (e) {
+    close(); toast(T('Camera not available – opening your phone camera instead.'));
+    const fic = $('#fic'); if (fic) fic.click(); return;
+  }
+  video.srcObject = cam.stream;
+  try { await video.play(); } catch (e) {}
+  const track = cam.stream.getVideoTracks()[0];
+  try { const caps = track.getCapabilities ? track.getCapabilities() : {}; if (caps.torch) { const tb = $('#camtorch'); tb.hidden = false; let on = false; tb.onclick = () => { on = !on; track.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {}); tb.classList.toggle('on', on); }; } } catch (e) {}
+  const small = newCanvas(8, 8);
+  // where the video picture sits on screen (object-fit: cover)
+  const geom = () => { const vw = video.videoWidth, vh = video.videoHeight, W = ov.clientWidth, H = ov.clientHeight, k = Math.max(W / vw, H / vh); return { k, ox: (W - vw * k) / 2, oy: (H - vh * k) / 2, W, H }; };
+  const draw = () => {
+    const g = geom(); oc.width = g.W; oc.height = g.H; const ctx = oc.getContext('2d'); ctx.clearRect(0, 0, g.W, g.H);
+    if (!cam || !cam.quad) return;
+    const pts = cam.quad.map(([x, y]) => [g.ox + x * video.videoWidth * g.k, g.oy + y * video.videoHeight * g.k]);
+    ctx.fillStyle = 'rgba(99,102,241,0.18)'; ctx.strokeStyle = '#818cf8'; ctx.lineWidth = 3; ctx.beginPath();
+    pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff'; pts.forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x, y, 7, 0, 7); ctx.fill(); ctx.stroke(); });
+  };
+  const moved = (a, b) => !a || !b ? 1 : Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1])));
+  cam.timer = setInterval(() => {
+    if (!cam || cam.busy || !video.videoWidth) return;
+    const s = 320 / Math.max(video.videoWidth, video.videoHeight);
+    small.width = Math.round(video.videoWidth * s); small.height = Math.round(video.videoHeight * s);
+    small.getContext('2d').drawImage(video, 0, 0, small.width, small.height);
+    const q = detectQuad(small);
+    cam.quad = q; draw();
+    cam.hist.push(q); if (cam.hist.length > 4) cam.hist.shift();
+    const hint = $('#camhint');
+    if (!q) { hint.textContent = T('Point the camera at the page'); hint.className = 'camhint'; return; }
+    const steady = cam.hist.length >= 3 && cam.hist.every(h => h && moved(h, q) < 0.02);
+    const fresh = moved(q, cam.lastShot) > 0.08;   // do not take the same page twice
+    hint.textContent = steady ? (fresh ? T('Page found – hold steady') : T('Turn to the next page')) : T('Page found – hold steady');
+    hint.className = 'camhint ok';
+    if (cam.auto && steady && fresh) capture();
+  }, 350);
+  async function capture() {
+    if (!cam || cam.busy || !video.videoWidth) return;
+    cam.busy = true;
+    const fl = ov.querySelector('.camflash'); fl.classList.remove('go'); void fl.offsetWidth; fl.classList.add('go');
+    try {
+      const c = newCanvas(video.videoWidth, video.videoHeight); c.getContext('2d').drawImage(video, 0, 0);
+      const q = cam.quad;
+      const blob = await canvasToBlob(c, 'image/jpeg', 0.95);
+      cam.count++;
+      const file = new File([blob], 'scan-' + new Date().toISOString().slice(11, 19).replace(/:/g, '') + '-' + cam.count + '.jpg', { type: 'image/jpeg' });
+      const tw = 900 / Math.max(c.width, c.height), t = newCanvas(c.width * tw, c.height * tw); t.getContext('2d').drawImage(c, 0, 0, t.width, t.height);
+      scanQuads.set(file, { q: q || [[0, 0], [1, 0], [1, 1], [0, 1]], auto: !!q, thumb: t.toDataURL('image/jpeg', 0.75), w: t.width, h: t.height });
+      $('#camthumb').style.backgroundImage = 'url(' + t.toDataURL('image/jpeg', 0.5) + ')';
+      $('#camcount').textContent = cam.count;
+      cam.lastShot = q; cam.hist = [];
+      if (state.tool) { state.files.push({ id: ++fid, file }); clearResults(); renderFiles(); if (state.tool.onFiles) state.tool.onFiles(); }
+    } catch (e) { toast(T('Could not take the photo')); }
+    setTimeout(() => { if (cam) cam.busy = false; }, 700);
+  }
+}
+
+/* Look previews for the scanner tools: tap a small picture to choose the look */
+const lookCache = new WeakMap();
+async function renderLookPreviews() {
+  const box = $('#extra'); if (!box || !state.files.length || !state.tool || !/scan/.test(state.tool.id)) return;
+  const f = state.files[0].file, s = scanQuads.get(f); if (!s || !s.thumb) return;
+  let prev = lookCache.get(f);
+  if (!prev) {
+    const img = new Image(); img.src = s.thumb; await img.decode();
+    const c0 = newCanvas(img.width, img.height); c0.getContext('2d').drawImage(img, 0, 0);
+    const full = s.q.every((p, j) => Math.abs(p[0] - [0, 1, 1, 0][j]) < 0.005 && Math.abs(p[1] - [0, 0, 1, 1][j]) < 0.005);
+    const w = full ? c0 : warpQuad(c0, s.q), k = 150 / Math.max(w.width, w.height);
+    prev = {};
+    for (const m of ['enhance', 'bw', 'gray', 'original']) { const t = newCanvas(w.width * k * 2, w.height * k * 2); t.getContext('2d').drawImage(w, 0, 0, t.width, t.height); prev[m] = docFilter(t, m).toDataURL('image/jpeg', 0.7); }
+    lookCache.set(f, prev);
+  }
+  const sel = $('[data-k="filter"]'); if (!sel) return;
+  if (sel.parentElement) sel.parentElement.classList.add('hide');
+  let row = $('#looks'); if (!row) { row = document.createElement('div'); row.id = 'looks'; row.className = 'looks'; box.appendChild(row); }
+  const names = { enhance: 'Enhanced', bw: 'Black & white', gray: 'Grayscale', original: 'Original' };
+  row.innerHTML = '<h3>' + esc(T('Look')) + '</h3><div>' + Object.keys(names).map(m => '<button class="look' + (sel.value === m ? ' on' : '') + '" data-look="' + m + '" aria-pressed="' + (sel.value === m) + '"><img src="' + prev[m] + '" alt=""><span>' + esc(T(names[m])) + '</span></button>').join('') + '</div>';
+  row.querySelectorAll('[data-look]').forEach(b => b.onclick = () => { sel.value = b.dataset.look; renderLookPreviews(); });
+}
+
 function route(langChange) {
   const id = location.hash.replace(/^#/, '');
   const t = TOOLS.find(x => x.id === id) || (!id && PAGE_TOOL ? TOOLS.find(x => x.id === PAGE_TOOL) : null);
+  if (!t && id !== 'tools' && id !== 'files' && id !== 'settings') document.body.classList.remove('tabbed');
+  if (t) document.body.classList.remove('tabbed');
+  if (!t && (id === 'tools' || id === 'files' || id === 'settings')) {
+    state.busy = false;
+    if (id === 'tools') renderTools(); else if (id === 'files') renderFilesTab(); else renderSettings();
+    if (langChange !== true) window.scrollTo(0, 0);
+    return;
+  }
   if (t) {
     const keep = langChange === true && state.tool === t;
     if (!keep) state.busy = false;

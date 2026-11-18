@@ -1,8 +1,8 @@
 {
-  "name": "PDF Convert Free – Image, PDF & Word",
+  "name": "PDF Convert Free – Scan, Edit & Convert PDF",
   "short_name": "PDF Convert Free",
-  "description": "Convert images, PDFs and Word files on your device.",
-  "start_url": "./",
+  "description": "Scan documents with your camera, edit and fill PDFs, compress PDF, resize photos to KB, convert JPG, PDF, Word and Excel, OCR in English and Hindi. Free – files never leave your phone.",
+  "start_url": "./?source=app",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f4f6fb",
@@ -31,6 +31,101 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
+    }
+  ],
+  "id": "./",
+  "orientation": "portrait",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": [
+    "productivity",
+    "utilities",
+    "business"
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan to PDF",
+      "url": "./#scan-to-pdf",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Edit & fill PDF",
+      "url": "./#edit-pdf",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Compress PDF",
+      "url": "./#compress-pdf",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "url": "./#files",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "store/screen-1.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Home – popular tools"
+    },
+    {
+      "src": "store/screen-2.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Live document scanner"
+    },
+    {
+      "src": "store/screen-3.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Clean scans with one tap"
+    },
+    {
+      "src": "store/screen-4.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Edit text and fill any form"
+    },
+    {
+      "src": "store/screen-5.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Compress PDF – text stays sharp"
+    },
+    {
+      "src": "store/screen-6.png",
+      "sizes": "1080x1920",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "Your files, saved on your phone"
     }
   ]
 }
