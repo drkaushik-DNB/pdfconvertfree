@@ -1707,7 +1707,7 @@ function drawObjs() {
     }
     const hpx = (o.type === 'check' || o.type === 'cross') ? o.w * W : o.h * H;
     const inner = (o.type === 'sig' || o.type === 'img') ? '<img src="' + o.img + '" alt="" draggable="false">' : o.type === 'check' ? '<svg viewBox="0 0 1 1"><path d="M.1 .5 L.4 .85 L.9 .15" /></svg>' : o.type === 'cross' ? '<svg viewBox="0 0 1 1"><path d="M.15 .15 L.85 .85 M.15 .85 L.85 .15" /></svg>' : '';
-    html += '<div class="eobj e' + o.type + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;width:' + o.w * 100 + '%;height:' + hpx + 'px">' + inner + '<span class="ersz" aria-label="Resize"></span></div>';
+    html += '<div class="eobj e' + o.type + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;width:' + o.w * 100 + '%;height:' + hpx + 'px">' + inner + ['nw', 'ne', 'sw', 'se'].map(c => '<span class="ersz ' + c + '" data-c="' + c + '" aria-label="Resize"></span>').join('') + '</div>';
   }
   setTimeout(() => { if (typeof keepId === 'string') { const o = ed.objs.find(x => x.id === keepId); if (o && document.activeElement !== document.querySelector('[data-oid="' + keepId + '"] .etxt')) focusText(o); } }, 0);
   const ae = document.activeElement, keepId = ae && ae.classList && ae.classList.contains('etxt') && ae.closest('[data-oid]') ? ae.closest('[data-oid]').dataset.oid : null;
@@ -1726,7 +1726,7 @@ function drawObjs() {
       const mv = el.querySelector('.emove'); if (mv) mv.onpointerdown = e => startDrag(e, o, 'move');
       if (o.type === 'etext') el.onpointerdown = e => { if (e.target === el) startDrag(e, o, 'move'); };
     } else {
-      el.onpointerdown = e => { if (e.target.classList.contains('ersz')) startDrag(e, o, 'size'); else startDrag(e, o, 'move'); };
+      el.onpointerdown = e => { if (e.target.classList.contains('ersz')) startDrag(e, o, 'size', e.target.dataset.c); else startDrag(e, o, 'move'); };
     }
   });
   L.querySelectorAll('[data-fld]').forEach(el => {
@@ -1763,7 +1763,7 @@ function markSel() {
     drawObjs();
   });
 }
-function startDrag(e, o, mode) {
+function startDrag(e, o, mode, corner) {
   e.preventDefault(); e.stopPropagation();
   const act = document.activeElement; if (act && act.classList && act.classList.contains('etxt')) act.blur();
   if (ed.sel !== o.id) { cleanupEmpty(); ed.sel = o.id; markSel(); }
@@ -1781,9 +1781,14 @@ function startDrag(e, o, mode) {
       o.y = clamp(o0.y + dy, -0.02, 0.98);
       el.style.left = o.x * 100 + '%'; el.style.top = o.y * 100 + '%';
     } else {
-      o.w = clamp(o0.w + dx, 0.012, 1);
+      const c = corner || 'se', west = c[1] === 'w', north = c[0] === 'n';
+      o.w = clamp(o0.w + (west ? -dx : dx), 0.012, 1);
+      const sq = o.type === 'check' || o.type === 'cross';
       if (o.type === 'sig' || o.type === 'img') o.h = o.w * (o0.h / o0.w);
-      else if (o.type !== 'check' && o.type !== 'cross') o.h = clamp(o0.h + dy, 0.004, 1);
+      else if (!sq) o.h = clamp(o0.h + (north ? -dy : dy), 0.004, 1);
+      if (west) o.x = o0.x + (o0.w - o.w);
+      if (north) o.y = o0.y + (sq ? (o0.w - o.w) * L.width / L.height : o0.h - o.h);
+      el.style.left = o.x * 100 + '%'; el.style.top = o.y * 100 + '%';
       el.style.width = o.w * 100 + '%';
       el.style.height = ((o.type === 'check' || o.type === 'cross') ? o.w * L.width : o.h * L.height) + 'px';
     }
