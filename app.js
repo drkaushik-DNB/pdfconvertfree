@@ -649,18 +649,29 @@ async function runResize(files, o, st) {
   return out;
 }
 
+async function scanPage(files, i, o, st) {
+  st(T('Processing page') + ' ' + (i + 1) + ' / ' + files.length + '…', i / files.length); await tick();
+  let c = await fileToCanvas(files[i], 1, '#ffffff', capSide(3200));
+  const s = scanQuads.get(files[i]);
+  let q = s && (s.manual || o.crop === 'on') ? s.q : null;
+  if (!s && o.crop === 'on') q = detectQuad(c);
+  const full = q && q.every((p, j) => Math.abs(p[0] - [0, 1, 1, 0][j]) < 0.005 && Math.abs(p[1] - [0, 0, 1, 1][j]) < 0.005);
+  if (q && !full) { st(T('Straightening page') + ' ' + (i + 1) + '…', (i + 0.4) / files.length); await tick(); c = warpQuad(c, q); }
+  return docFilter(c, o.filter);
+}
+async function runScanImages(files, o, st) {
+  const out = [], mime = o.fmt === 'png' ? 'image/png' : 'image/jpeg';
+  for (let i = 0; i < files.length; i++) {
+    const c = await scanPage(files, i, o, st);
+    out.push({ name: base(files[i].name) + '-scan.' + o.fmt, blob: await canvasToBlob(c, mime, 0.9), info: c.width + '×' + c.height + ' px' });
+  }
+  return out;
+}
 async function runScan(files, o, st) {
   await load('pdflib');
   const pdf = await PDFLib.PDFDocument.create();
   for (let i = 0; i < files.length; i++) {
-    st(T('Processing page') + ' ' + (i + 1) + ' / ' + files.length + '…', i / files.length); await tick();
-    let c = await fileToCanvas(files[i], 1, '#ffffff', capSide(3200));
-    const s = scanQuads.get(files[i]);
-    let q = s && (s.manual || o.crop === 'on') ? s.q : null;
-    if (!s && o.crop === 'on') q = detectQuad(c);
-    const full = q && q.every((p, j) => Math.abs(p[0] - [0, 1, 1, 0][j]) < 0.005 && Math.abs(p[1] - [0, 0, 1, 1][j]) < 0.005);
-    if (q && !full) { st(T('Straightening page') + ' ' + (i + 1) + '…', (i + 0.4) / files.length); await tick(); c = warpQuad(c, q); }
-    c = docFilter(c, o.filter);
+    const c = await scanPage(files, i, o, st);
     const img = await pdf.embedJpg(await jpegBytes(c, 0.85));
     const [pw, ph] = o.page === 'fit' ? [c.width * 0.75, c.height * 0.75] : (c.width > c.height ? [A4[1], A4[0]] : A4);
     const page = pdf.addPage([pw, ph]);
@@ -1262,7 +1273,7 @@ function ocrRuns(lines, sc) {
     for (const w of ln.words || []) {
       const t = (w.text || '').trim(); if (!t) continue;
       const bb = w.bbox, hpx = bb.y1 - bb.y0;
-      const leader = /^[.\-_…·,:;'"`~=]{3,}$/.test(t) || /(.)\1{4,}/.test(t) || (w.confidence != null && w.confidence < 35);
+      const leader = /^[.\-_…·,:;'"`~=]{3,}$/.test(t) || /([^\w])\1{3,}|(.)\2{5,}/.test(t) || (w.confidence != null && w.confidence < 12 && !/[A-Za-z0-9]{2,}/.test(t));
       if (leader) { flush(); continue; }
       if (cur && bb.x0 - cur.x1 > Math.max(cur.hpx, hpx) * 1.6) flush();
       const wa = /[bdfhklt0-9A-Z|()\/!?']/.test(t), wd = /[gjpqy()|]/.test(t);
@@ -1284,16 +1295,20 @@ async function ocrPage(pn) {
   const my = ed.token; ed.ocr[pn] = 'running'; showOcrHint(pn, 0);
   try {
     const page = await ed.doc.getPage(pn); const v1 = page.getViewport({ scale: 1 });
-    const c = await renderPdfPage(ed.doc, pn, Math.min(4, 2200 / Math.max(v1.width, v1.height)));
+    const c = await renderPdfPage(ed.doc, pn, Math.min(5, 3000 / Math.max(v1.width, v1.height)));
     const sc = c.width / v1.width;
-    docFilter(c, 'enhance');
+    (ed.ocrCv = ed.ocrCv || {})[pn] = { c, sc };
+    const work = newCanvas(c.width, c.height); work.getContext('2d').drawImage(c, 0, 0); docFilter(work, 'enhance');
     const langEl = document.querySelector('[data-k="ocrlang"]');
     const w = await getOcr(langEl ? langEl.value : 'eng', () => showOcrHint(pn, 0, true));
     ocrLog = m => { if (m && m.status === 'recognizing text' && my === ed.token) showOcrHint(pn, m.progress); };
-    const r = await w.recognize(c, {}, { text: true, blocks: true });
+    let r;
+    try { await w.setParameters({ tessedit_pageseg_mode: '11' }); } catch (e) {}  // "sparse text": finds scattered labels on forms
+    try { r = await w.recognize(work, {}, { text: true, blocks: true }); }
+    finally { try { await w.setParameters({ tessedit_pageseg_mode: '3' }); } catch (e) {} }
     ocrLog = null;
     if (my !== ed.token) return;
-    ed.runs[pn] = ocrRuns(ocrLines(r.data), sc);
+    ed.runs[pn] = ocrRuns(ocrLines(r.data), sc).map(x => (x.i = ed.nextRun = (ed.nextRun || 0) + 1, x));
     ed.sizes[pn] = ed.runs[pn].map(x => [x.base, x.h]);
     ed.ocr[pn] = 'done';
     if (pn === ed.pageNo) {
@@ -1308,6 +1323,7 @@ async function ocrPage(pn) {
 }
 const ED_MODES = {
   edit: ['✏️', 'Edit text', 'Tap any text to change it. Tap an empty spot or a dotted line to type new text.'],
+  find: ['🔍', 'Find text', 'Some text not tappable? Drag a box around it to read it.'],
   text: ['🔤', 'Add text', 'Tap where you want to type (e.g. on a dotted line).'],
   check: ['✓', 'Tick', 'Tap where the tick should go.'],
   cross: ['✗', 'Cross', 'Tap where the cross should go.'],
@@ -1319,7 +1335,7 @@ const ED_MODES = {
   move: ['👆', 'Select', 'Tap an item to move, resize or delete it.']
 };
 function edModes() {
-  return ed.tool === 'sign-pdf' ? ['sig', 'date', 'text', 'img', 'move'] : ['edit', 'text', 'check', 'cross', 'date', 'white', 'hl', 'sig', 'img', 'move'];
+  return ed.tool === 'sign-pdf' ? ['sig', 'date', 'text', 'img', 'move'] : ['edit', 'find', 'text', 'check', 'cross', 'date', 'white', 'hl', 'sig', 'img', 'move'];
 }
 function renderEditor() {
   const box = $('#extra'); if (!box || !ed.doc) return;
@@ -1394,7 +1410,7 @@ function layerDown(e) {
     placeText(nx, ny, false); return;
   }
   if (m === 'move') { drawObjs(); return; }
-  if (m === 'white' || m === 'hl') { drawRect(e, m, nx, ny, r); return; }
+  if (m === 'white' || m === 'hl' || m === 'find') { drawRect(e, m, nx, ny, r); return; }
   snap();
   const hPt = nearestSize(ed.pageNo, pt[1]);
   if (m === 'text' || m === 'date') { ed.undo.pop(); placeText(nx, ny, m === 'date'); } else if (m === 'check' || m === 'cross') {
@@ -1406,10 +1422,80 @@ function layerDown(e) {
     placeImage('sig', ed.sig.url, ed.sig.w, ed.sig.h, nx, ny, true);
   }
 }
+async function regionOcr(pn, x0, y0, x1, y1) {
+  const my = ed.token;
+  toast(T('Reading the selected area…'));
+  try {
+    const page = await ed.doc.getPage(pn); const v1 = page.getViewport({ scale: 1 });
+    ed.ocrCv = ed.ocrCv || {};
+    if (!ed.ocrCv[pn]) { const c0 = await renderPdfPage(ed.doc, pn, Math.min(5, 3000 / Math.max(v1.width, v1.height))); ed.ocrCv[pn] = { c: c0, sc: c0.width / v1.width }; }
+    const { c, sc } = ed.ocrCv[pn];
+    const X0 = Math.max(0, Math.floor(x0 * c.width) - 4), Y0 = Math.max(0, Math.floor(y0 * c.height) - 4);
+    const X1 = Math.min(c.width, Math.ceil(x1 * c.width) + 4), Y1 = Math.min(c.height, Math.ceil(y1 * c.height) + 4);
+    const up = (Y1 - Y0) < 90 ? Math.min(3, 90 / (Y1 - Y0)) : 1;
+    const crop = newCanvas((X1 - X0) * up + 40, (Y1 - Y0) * up + 40, '#ffffff'), cx = crop.getContext('2d');
+    cx.imageSmoothingQuality = 'high'; cx.drawImage(c, X0, Y0, X1 - X0, Y1 - Y0, 20, 20, (X1 - X0) * up, (Y1 - Y0) * up);
+    docFilter(crop, 'enhance');
+    const langEl = document.querySelector('[data-k="ocrlang"]');
+    const w = await getOcr(langEl ? langEl.value : 'eng', () => toast(T('Loading text reader (first time ~1 min)…')));
+    let r;
+    try { await w.setParameters({ tessedit_pageseg_mode: '6' }); } catch (e) {}
+    try { r = await w.recognize(crop, {}, { text: true, blocks: true }); }
+    finally { try { await w.setParameters({ tessedit_pageseg_mode: '3' }); } catch (e) {} }
+    if (my !== ed.token) return;
+    const k = sc * up;
+    const runs = ocrRuns(ocrLines(r.data), k).map(x => {
+      const dx = (X0 - 20 / up) / sc, dy = (Y0 - 20 / up) / sc;
+      x.x += dx; x.base += dy; x.top += dy; x.bot += dy; x.i = ed.nextRun = (ed.nextRun || 0) + 1; return x;
+    });
+    if (!runs.length) { toast(T('No text found there – use White-out and Add text instead.')); return; }
+    // drop old runs that overlap the newly read ones
+    ed.runs[pn] = (ed.runs[pn] || []).filter(o => !runs.some(n => o.x < n.x + n.w && n.x < o.x + o.w && Math.abs(o.base - n.base) < Math.max(o.h, n.h) * 0.7)).concat(runs);
+    ed.sizes[pn] = ed.runs[pn].map(x => [x.base, x.h]);
+    ed.mode = 'edit'; refreshMode(); drawObjs();
+    if (pn === ed.pageNo) editRun(runs[0].i);
+  } catch (e) { toast(T('Could not read the text (needs internet the first time). You can still add text and white-out.')); }
+}
+/* Line up new text with the form: same baseline as the label on that line, or just above a dotted / ruled line */
+function pageFam(pn) {
+  const c = { sans: 0, serif: 0, mono: 0 }; for (const r of ed.runs[pn] || []) c[fontInfo(pn, r).fam] += r.text.length;
+  return c.serif > c.sans ? 'serif' : 'sans';
+}
+function findRule(nx, ny, sizePt) {
+  const cv = $('#edcv'), vp = ed.vp[ed.pageNo]; if (!cv || !vp) return null;
+  const k = cv.width / vp.width, cx = nx * cv.width, cy = ny * cv.height;
+  const x0 = Math.max(0, Math.round(cx - 70 * k)), x1 = Math.min(cv.width, Math.round(cx + 70 * k));
+  const y0 = Math.max(0, Math.round(cy - sizePt * 0.8 * k)), y1 = Math.min(cv.height, Math.round(cy + sizePt * 2.4 * k));
+  if (x1 - x0 < 4 || y1 - y0 < 2) return null;
+  const d = cv.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0).data, w = x1 - x0;
+  let best = null;
+  for (let y = 0; y < y1 - y0; y++) {
+    let dark = 0; for (let x = 0; x < w; x++) { const i = (y * w + x) * 4; if (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114 < 150) dark++; }
+    const f = dark / w;
+    if (f > 0.28) { const dist = Math.abs(y0 + y - cy); if (!best || dist < best.dist - 2 || (Math.abs(dist - best.dist) <= 2 && f > best.f)) best = { y: (y0 + y) / k, dist, f }; }
+  }
+  return best ? best.y : null;
+}
+function snapLine(pn, nx, ny) {
+  const vp = ed.vp[pn], y = ny * vp.height, x = nx * vp.width, runs = ed.runs[pn] || [];
+  let best = null;
+  for (const r of runs) { const dd = Math.abs(r.base - r.h * 0.35 - y); if (dd < r.h * 0.9 && (!best || dd < best.dd)) best = { r, dd }; }
+  let base, size, fam;
+  if (best) { base = best.r.base; size = best.r.h; fam = fontInfo(pn, best.r).fam; }
+  else {
+    size = nearestSize(pn, y); fam = pageFam(pn);
+    const rule = findRule(nx, ny, size);
+    base = rule != null ? rule - size * 0.18 : y + size * 0.35;
+  }
+  // line up with the left edge of nearby text if the tap is just beside it
+  let sx = x;
+  for (const r of runs) if (Math.abs(r.x - x) < size * 0.8 && Math.abs(r.base - base) < size * 6) { sx = r.x; break; }
+  return { base, size, fam, x: sx };
+}
 function placeText(nx, ny, isDate) {
   snap();
-  const vp = ed.vp[ed.pageNo], hPt = nearestSize(ed.pageNo, ny * vp.height), fs = hPt / vp.width;
-  const o = { id: uid(), page: ed.pageNo, type: 'text', text: isDate ? todayStr() : '', fs, color: 'black', x: nx - fs * 0.2, y: ny - (hPt * 1.17) / vp.height };
+  const vp = ed.vp[ed.pageNo], sn = snapLine(ed.pageNo, nx, ny), fs = sn.size / vp.width;
+  const o = { id: uid(), page: ed.pageNo, type: 'text', text: isDate ? todayStr() : '', fs, color: 'black', fam: sn.fam, x: sn.x / vp.width - fs * 0.2, y: (sn.base - sn.size * 1.17) / vp.height };
   ed.objs.push(o); ed.sel = o.id; drawObjs(); focusText(o, isDate);
 }
 function focusText(o, selectIt) {
@@ -1439,6 +1525,7 @@ function drawRect(e, type, nx, ny, r) {
   };
   L.onpointerup = L.onpointercancel = () => {
     L.onpointermove = null; L.onpointerup = null;
+    if (type === 'find') { ed.undo.pop(); ed.objs = ed.objs.filter(x => x !== o); ed.sel = null; drawObjs(); if (o.w > 0.01 && o.h > 0.005) regionOcr(ed.pageNo, o.x, o.y, o.x + o.w, o.y + o.h); else toast(T('Drag a box around the text.')); return; }
     if (o.w < 0.015 || o.h < 0.006) { o.w = type === 'white' ? 0.25 : 0.3; o.h = 0.025; }
     drawObjs();
   };
@@ -1472,7 +1559,7 @@ function drawObjs() {
   }
   for (const o of ed.objs.filter(o => o.page === pn)) {
     const sel = o.id === ed.sel ? ' sel' : '';
-    if (o.type === 'text') { html += '<div class="eobj etext' + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;font-size:' + (o.fs * W) + 'px;color:' + ED_COLORS[o.color] + '"><span class="emove" aria-label="Move">✥</span><div class="etxt" contenteditable="true" spellcheck="false" data-ph="' + esc(T('Type here')) + '">' + esc(o.text).replace(/\n/g, '<br>') + '</div></div>'; continue; }
+    if (o.type === 'text') { html += '<div class="eobj etext' + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;font-size:' + (o.fs * W) + 'px;color:' + ED_COLORS[o.color] + ';font-family:' + FAM_CSS[o.fam || 'sans'] + '"><span class="emove" aria-label="Move">✥</span><div class="etxt" contenteditable="true" spellcheck="false" data-ph="' + esc(T('Type here')) + '">' + esc(o.text).replace(/\n/g, '<br>') + '</div></div>'; continue; }
     if (o.type === 'etext') {
       const k = W / vp.width, fpx = o.fsPt * k;
       if (o.box) html += '<div class="ecover" style="left:' + o.box[0] * 100 + '%;top:' + o.box[1] * 100 + '%;width:' + o.box[2] * 100 + '%;height:' + o.box[3] * 100 + '%;background:' + o.bg + '"></div>';
@@ -1514,7 +1601,7 @@ function markSel() {
   if (!o) { bar.innerHTML = ''; return; }
   const txt = o.type === 'text', et = o.type === 'etext';
   bar.innerHTML = (txt || et ? '<button class="chip" data-s="smaller" aria-label="Smaller text">A−</button><button class="chip" data-s="bigger" aria-label="Bigger text">A+</button>' : '') +
-    (et ? '<button class="chip" data-s="font" aria-label="Change font" title="' + esc(T('Change font')) + '" style="font-family:' + FAM_CSS[o.fam].replace(/"/g, '') + '">Aa</button><button class="chip' + (o.bold ? ' on' : '') + '" data-s="bold" aria-label="Bold"><b>B</b></button><button class="chip' + (o.italic ? ' on' : '') + '" data-s="italic" aria-label="Italic"><i>I</i></button>' : '') +
+    (et || txt ? '<button class="chip" data-s="font" aria-label="Change font" title="' + esc(T('Change font')) + '" style="font-family:' + FAM_CSS[o.fam || 'sans'].replace(/"/g, '') + '">Aa</button>' : '') + (et ? '<button class="chip' + (o.bold ? ' on' : '') + '" data-s="bold" aria-label="Bold"><b>B</b></button><button class="chip' + (o.italic ? ' on' : '') + '" data-s="italic" aria-label="Italic"><i>I</i></button>' : '') +
     (txt || et ? Object.keys(ED_COLORS).map(c => '<button class="dot' + ((txt ? o.color === c : o.ink === ED_COLORS[c]) ? ' on' : '') + '" data-s="c-' + c + '" style="background:' + ED_COLORS[c] + '" aria-label="' + c + '"></button>').join('') : '') +
     (o.type === 'sig' ? '<button class="chip" data-s="newsig">✍ ' + esc(T('New signature')) + '</button>' : '') +
     (et ? '<button class="chip" data-s="revert">↺ ' + esc(T('Original')) + '</button>' : '') +
@@ -1525,7 +1612,7 @@ function markSel() {
     else if (a === 'smaller') { if (txt) o.fs = Math.max(0.006, o.fs / 1.12); else o.fsPt = Math.max(4, o.fsPt / 1.12); }
     else if (a === 'bigger') { if (txt) o.fs = Math.min(0.12, o.fs * 1.12); else o.fsPt = Math.min(72, o.fsPt * 1.12); }
     else if (a === 'bold') o.bold = !o.bold;
-    else if (a === 'font') o.fam = { sans: 'serif', serif: 'mono', mono: 'sans' }[o.fam];
+    else if (a === 'font') o.fam = { sans: 'serif', serif: 'mono', mono: 'sans' }[o.fam || 'sans'];
     else if (a === 'italic') o.italic = !o.italic;
     else if (a === 'newsig') { ed.undo.pop(); sigMaker(null, o); return; }
     else if (a.startsWith('c-')) { if (txt) o.color = a.slice(2); else o.ink = ED_COLORS[a.slice(2)]; }
@@ -1716,7 +1803,7 @@ async function runEditPdf(files, o, st) {
       } else if (ob.type === 'text') {
         const size = ob.fs * vp.width, pad = size * 0.2;
         const lines = (ob.text || '').split('\n');
-        for (let i = 0; i < lines.length; i++) await drawLine(lines[i], X + pad, Y + pad + size * 0.97 + i * size * 1.25, size, ED_COLORS[ob.color], P.StandardFonts.Helvetica);
+        for (let i = 0; i < lines.length; i++) await drawLine(lines[i], X + pad, Y + pad + size * 0.97 + i * size * 1.25, size, ED_COLORS[ob.color], stdFont({ fam: ob.fam || 'sans' }), '{px} ' + FAM_CSS[ob.fam || 'sans'].split(',')[0] + ', "Noto Sans Devanagari", sans-serif');
       } else if (ob.type === 'hl') {
         const w = ob.w * vp.width, h = ob.h * vp.height, bl = Pt(X, Y + h);
         page.drawRectangle({ x: bl[0], y: bl[1], width: w, height: h, rotate: rot, color: P.rgb(1, 0.92, 0.2), opacity: 0.4, borderWidth: 0 });
@@ -1951,8 +2038,11 @@ const TOOLS = [
       { k: 'fit', label: 'If both width and height are set', type: 'select', options: [['crop', 'Crop to fill (no borders)'], ['fit', 'Fit inside (white borders)'], ['stretch', 'Stretch']] },
       { k: 'max', label: 'Max size (KB)', type: 'num', ph: 'no limit' }, { k: 'min', label: 'Min size (KB)', type: 'num', ph: 'none' },
       { k: 'fmt', label: 'Format', type: 'select', options: [['jpg', 'JPG'], ['png', 'PNG']], hint: 'A KB limit always saves as JPG' }], run: runResize, onOpt: applyPreset },
-  { id: 'scan-to-pdf', libs: ['pdflib'], onFiles: scanLoad, cat: 'img', badge: 'CAMERA → PDF', title: 'Scan document to PDF', desc: 'Photograph pages – auto-crop and clean them into a PDF.', seo: 'Scan Document to PDF with Phone Camera', accept: 'image/*', hint: 'Take a photo of each page, or pick from gallery', multi: true, camera: true, btn: 'Create PDF',
+  { id: 'scan-to-pdf', libs: ['pdflib'], onFiles: scanLoad, cat: 'img', badge: 'CAMERA → PDF', title: 'Image scan to PDF', desc: 'Photograph pages – auto-crop, straighten and clean them into one PDF.', seo: 'Scan Document to PDF with Phone Camera', accept: 'image/*', hint: 'Take a photo of each page, or pick from gallery', multi: true, camera: true, btn: 'Create PDF',
     opts: [{ k: 'crop', label: 'Auto-crop & straighten', type: 'select', options: [['on', 'On'], ['off', 'Off (unless adjusted)']] }, { k: 'filter', label: 'Look', type: 'select', options: [['enhance', 'Enhanced (white background)'], ['bw', 'Black & white'], ['gray', 'Grayscale'], ['original', 'Original colour']] }, { k: 'page', label: 'Page size', type: 'select', options: [['a4', 'A4'], ['fit', 'Same as photo']] }], run: runScan,
+    note: 'Corners are found automatically – tap “Adjust corners” to fix any page. For best results, put the paper on a darker surface.' },
+  { id: 'image-scanner', libs: [], onFiles: scanLoad, cat: 'img', badge: 'SCANNER', title: 'Image scanner', desc: 'Turn phone photos of documents into clean, flat scanned images.', seo: 'Image Scanner Online – Scan Documents with Phone Camera', accept: 'image/*', hint: 'Take a photo of each page, or pick from gallery', multi: true, camera: true, btn: 'Scan images',
+    opts: [{ k: 'crop', label: 'Auto-crop & straighten', type: 'select', options: [['on', 'On'], ['off', 'Off (unless adjusted)']] }, { k: 'filter', label: 'Look', type: 'select', options: [['enhance', 'Enhanced (white background)'], ['bw', 'Black & white'], ['gray', 'Grayscale'], ['original', 'Original colour']] }, { k: 'fmt', label: 'Save as', type: 'select', options: [['jpg', 'JPG'], ['png', 'PNG']] }], run: runScanImages,
     note: 'Corners are found automatically – tap “Adjust corners” to fix any page. For best results, put the paper on a darker surface.' },
   { id: 'image-to-pdf', libs: ['pdflib', 'heic'], cat: 'conv', badge: 'IMG → PDF', title: 'Image to PDF', desc: 'Combine one or many photos into a single PDF.', seo: 'JPG to PDF Converter – Combine Images into PDF', accept: IMG_ACCEPT, hint: 'Add images in the order you want the pages', multi: true, btn: 'Create PDF',
     opts: [{ k: 'page', label: 'Page size', type: 'select', options: [['fit', 'Same as image'], ['a4', 'A4 (auto portrait / landscape)']] }, { k: 'margin', label: 'Margin', type: 'select', options: [['0', 'None'], ['20', 'Small'], ['40', 'Large']], hint: 'White space around the image on each page' }], run: runImgToPdf },
