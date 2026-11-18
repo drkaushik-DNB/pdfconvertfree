@@ -1,4 +1,4 @@
-/* PDF Converter – browser-only Image / PDF / Word converter. Made by Dr. Kaushik. */
+/* PDF Convert Free – browser-only Image / PDF / Word converter. Made by Dr. Kaushik. */
 'use strict';
 
 /* ---------- Language ---------- */
@@ -791,7 +791,7 @@ function langPicker() {
 function renderHeader(tool) {
   $('#hdr').innerHTML = '<div class="topbar">' + (tool ? '<button class="back" id="back">← ' + esc(T('All tools')) + '</button>' : '<span></span>') + langPicker() + '</div>' +
     (tool ? '<div class="logo"><i>⇄</i>' + esc(T(tool.title)) + '</div><p>' + esc(T(tool.desc)) + '</p>'
-      : '<div class="logo"><i>⇄</i>PDF Converter</div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
+      : '<div class="logo"><i>⇄</i>PDF Convert Free</div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
         (installEvt ? ' <button class="privacy install" id="install">⬇ ' + esc(T('Install app')) + '</button>' : ''));
   const b = $('#back'); if (b) b.onclick = () => { location.hash = 'home'; };
   const ins = $('#install'); if (ins) ins.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderHeader(state.tool); };
@@ -801,7 +801,7 @@ function renderHeader(tool) {
   });
 }
 function setSeo(tool) {
-  document.title = tool ? tool.seo + ' – Free & Private | PDF Converter' : 'PDF Converter – Free Image, PDF & Word Converter (JPG, PDF, DOCX, OCR)';
+  document.title = tool ? tool.seo + ' – Free & Private | PDF Convert Free' : 'PDF Convert Free – Image, PDF & Word Converter (JPG, PDF, DOCX, OCR)';
   const m = document.querySelector('meta[name=description]');
   if (m) m.content = tool ? tool.desc + ' Free, no upload – works in your browser.' : 'Free online converter: JPG to PDF, PDF to Word, Word to PDF, compress PDF, resize image to KB, OCR in Hindi and Gujarati. Files never leave your device.';
 }
