@@ -786,7 +786,7 @@ const state = { tool: null, files: [], results: [], busy: false, pages: [] };
 let fid = 0, installEvt = null;
 
 function langPicker() {
-  return '<div class="langs">' + [['en', 'EN'], ['hi', 'हिंदी'], ['gu', 'ગુજરાતી']].map(([k, l]) => '<button class="lang' + (k === LANG ? ' on' : '') + '" data-lang="' + k + '">' + l + '</button>').join('') + '</div>';
+  return '<div class="langs">' + [['en', 'EN'], ['hi', 'हिंदी']].map(([k, l]) => '<button class="lang' + (k === LANG ? ' on' : '') + '" data-lang="' + k + '">' + l + '</button>').join('') + '</div>';
 }
 function renderHeader(tool) {
   $('#hdr').innerHTML = '<div class="topbar">' + (tool ? '<button class="back" id="back">← ' + esc(T('All tools')) + '</button>' : '<span></span>') + langPicker() + '</div>' +
