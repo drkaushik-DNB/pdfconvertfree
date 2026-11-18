@@ -1086,6 +1086,508 @@ async function runOrganize(files, o, st) {
   return [{ name: base(files[0].name) + '-organized.pdf', blob: pdfBlob(await d.save()), info: keep.length + ' pages' }];
 }
 
+/* ---------- PDF editor: Sign PDF + Edit & fill PDF ---------- */
+const ed = { doc: null, file: null, pageNo: 1, n: 0, objs: [], sel: null, fields: [], token: 0, sig: null, tool: null };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const ED_COLORS = { black: '#111111', blue: '#1d3fbf', red: '#c81e1e' };
+function todayStr() { const d = new Date(); return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear(); }
+
+function describeField(fl) {
+  const P = PDFLib; const name = fl.getName();
+  try {
+    if (fl instanceof P.PDFTextField) return { name, type: 'text', value: fl.getText() || '', multi: fl.isMultiline() };
+    if (fl instanceof P.PDFCheckBox) return { name, type: 'check', value: fl.isChecked() };
+    if (fl instanceof P.PDFDropdown) return { name, type: 'drop', options: fl.getOptions(), value: (fl.getSelected() || [])[0] || '' };
+    if (fl instanceof P.PDFOptionList) return { name, type: 'drop', options: fl.getOptions(), value: (fl.getSelected() || [])[0] || '' };
+    if (fl instanceof P.PDFRadioGroup) return { name, type: 'radio', options: fl.getOptions(), value: fl.getSelected() || '' };
+  } catch (e) {}
+  return null;
+}
+
+async function editorLoad(keep) {
+  const box = $('#extra'); if (!box) return;
+  const f = state.files[0] && state.files[0].file;
+  if (!f) { box.innerHTML = ''; ed.file = null; return; }
+  if (keep === true && ed.file === f && ed.doc) { renderEditor(); return; }
+  const my = ++ed.token;
+  ed.file = f; ed.objs = []; ed.sel = null; ed.pageNo = 1; ed.fields = []; ed.tool = state.tool.id;
+  box.innerHTML = '<p class="mute">' + esc(T('Loading pages…')) + '</p>';
+  try {
+    if (ed.doc) closePdf(ed.doc);
+    ed.doc = null;
+    const doc = await openPdfJs(f); if (my !== ed.token) { closePdf(doc); return; }
+    ed.doc = doc; ed.n = doc.numPages;
+    if (ed.tool === 'edit-pdf') {
+      try { const d = await openPdfLib(f); ed.fields = d.getForm().getFields().map(describeField).filter(Boolean); } catch (e) { ed.fields = []; }
+    }
+    if (my === ed.token) renderEditor();
+  } catch (e) { if (my === ed.token) box.innerHTML = '<p class="status err">⚠️ ' + esc(e.message) + '</p>'; }
+}
+
+function edToolbar() {
+  const sign = ed.tool === 'sign-pdf';
+  const b = (k, label) => '<button class="chip" data-add="' + k + '">' + label + '</button>';
+  return '<div class="edtools">' + (sign
+    ? b('sig', '✍ ' + esc(T('Signature'))) + b('date', '📅 ' + esc(T('Date'))) + b('text', '＋ ' + esc(T('Text')))
+    : b('text', '＋ ' + esc(T('Text'))) + b('check', '✓ ' + esc(T('Tick'))) + b('cross', '✗ ' + esc(T('Cross'))) + b('date', '📅 ' + esc(T('Date'))) +
+      b('white', '▭ ' + esc(T('White-out'))) + b('hl', '▮ ' + esc(T('Highlight'))) + b('sig', '✍ ' + esc(T('Signature')))) + '</div>';
+}
+function renderEditor() {
+  const box = $('#extra'); if (!box || !ed.doc) return;
+  const fieldsHtml = ed.fields.length ? '<div class="fpanel"><h3>📝 ' + esc(T('Form fields')) + ' (' + ed.fields.length + ')</h3>' + ed.fields.map((f, i) => {
+    const id = 'fld' + i, lab = '<label for="' + id + '">' + esc(f.name) + '</label>';
+    if (f.type === 'text') return '<div class="opt">' + lab + (f.multi ? '<textarea id="' + id + '" data-fld="' + i + '" rows="3">' + esc(f.value) + '</textarea>' : '<input type="text" id="' + id + '" data-fld="' + i + '" value="' + esc(f.value) + '">') + '</div>';
+    if (f.type === 'check') return '<div class="opt chk"><input type="checkbox" id="' + id + '" data-fld="' + i + '"' + (f.value ? ' checked' : '') + '><label for="' + id + '">' + esc(f.name) + '</label></div>';
+    return '<div class="opt">' + lab + '<select id="' + id + '" data-fld="' + i + '"><option value="">—</option>' + f.options.map(o => '<option' + (o === f.value ? ' selected' : '') + '>' + esc(o) + '</option>').join('') + '</select></div>';
+  }).join('') + '</div>' : '';
+  box.innerHTML = edToolbar() +
+    '<div class="pgnav"><button class="ib" id="pprev" aria-label="Previous page"' + (ed.pageNo <= 1 ? ' disabled' : '') + '>◀</button><span>' + esc(T('Page')) + ' ' + ed.pageNo + ' / ' + ed.n + '</span><button class="ib" id="pnext" aria-label="Next page"' + (ed.pageNo >= ed.n ? ' disabled' : '') + '>▶</button></div>' +
+    '<div class="edpage" id="edpage"><canvas id="edcv"></canvas><div class="edlayer" id="edlayer"></div></div>' +
+    '<div class="selbar" id="selbar"></div>' +
+    '<p class="hint2">' + esc(T('Tap a button above to add an item, then drag it into place. Drag the corner dot to resize.')) + '</p>' + fieldsHtml;
+  box.querySelectorAll('[data-add]').forEach(b => b.onclick = () => addObj(b.dataset.add));
+  $('#pprev').onclick = () => { ed.pageNo--; ed.sel = null; renderEditor(); };
+  $('#pnext').onclick = () => { ed.pageNo++; ed.sel = null; renderEditor(); };
+  box.querySelectorAll('[data-fld]').forEach(el => el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => {
+    const f = ed.fields[+el.dataset.fld]; f.value = el.type === 'checkbox' ? el.checked : el.value; f.touched = true;
+  }));
+  $('#edlayer').onpointerdown = e => { if (e.target.id === 'edlayer') { ed.sel = null; drawObjs(); } };
+  drawEdPage();
+}
+let edRender = 0;
+async function drawEdPage() {
+  const my = ++edRender, cv = $('#edcv'); if (!cv) return;
+  const page = await ed.doc.getPage(ed.pageNo); if (my !== edRender) return;
+  const v1 = page.getViewport({ scale: 1 });
+  const wrap = $('#edpage'); const cssW = wrap.clientWidth || 340;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const vp = page.getViewport({ scale: cssW / v1.width * dpr });
+  cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+  cv.style.width = '100%'; wrap.style.aspectRatio = v1.width + ' / ' + v1.height;
+  const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  drawObjs();
+}
+function addObj(type) {
+  if (type === 'sig') { if (ed.sig) placeSig(); else sigMaker(); return; }
+  const o = { id: Math.random().toString(36).slice(2), page: ed.pageNo, type, x: 0.3, y: 0.4 };
+  if (type === 'text' || type === 'date') { o.type = 'text'; o.text = type === 'date' ? todayStr() : T('Type here'); o.fs = 0.022; o.color = 'black'; }
+  else if (type === 'check' || type === 'cross') { o.w = 0.05; o.h = 0; }
+  else if (type === 'white') { o.w = 0.3; o.h = 0.04; }
+  else if (type === 'hl') { o.w = 0.35; o.h = 0.025; }
+  ed.objs.push(o); ed.sel = o.id; drawObjs();
+  if (o.type === 'text') { const t = document.querySelector('[data-oid="' + o.id + '"] .etxt'); if (t) { t.focus(); selectAll(t); } }
+}
+function selectAll(el) { try { const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } catch (e) {} }
+function placeSig() {
+  const L = $('#edlayer'); const ar = ed.sig.h / ed.sig.w; const w = 0.3;
+  const o = { id: Math.random().toString(36).slice(2), page: ed.pageNo, type: 'sig', x: 0.55, y: 0.75, w, h: w * ar * (L.clientWidth / L.clientHeight), img: ed.sig.url };
+  ed.objs.push(o); ed.sel = o.id; drawObjs();
+}
+function drawObjs() {
+  const L = $('#edlayer'); if (!L) return;
+  const W = L.clientWidth, H = L.clientHeight;
+  L.innerHTML = ed.objs.filter(o => o.page === ed.pageNo).map(o => {
+    const sel = o.id === ed.sel ? ' sel' : '';
+    if (o.type === 'text') return '<div class="eobj etext' + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;font-size:' + (o.fs * W) + 'px;color:' + ED_COLORS[o.color] + '"><span class="emove" aria-label="Move">✥</span><div class="etxt" contenteditable="true" spellcheck="false">' + esc(o.text).replace(/\n/g, '<br>') + '</div></div>';
+    const hpx = (o.type === 'check' || o.type === 'cross') ? o.w * W : o.h * H;
+    const inner = o.type === 'sig' ? '<img src="' + o.img + '" alt="" draggable="false">' : o.type === 'check' ? '<svg viewBox="0 0 1 1"><path d="M.1 .5 L.4 .85 L.9 .15" /></svg>' : o.type === 'cross' ? '<svg viewBox="0 0 1 1"><path d="M.15 .15 L.85 .85 M.15 .85 L.85 .15" /></svg>' : '';
+    return '<div class="eobj e' + o.type + sel + '" data-oid="' + o.id + '" style="left:' + o.x * 100 + '%;top:' + o.y * 100 + '%;width:' + o.w * 100 + '%;height:' + hpx + 'px">' + inner + '<span class="ersz" aria-label="Resize"></span></div>';
+  }).join('');
+  L.querySelectorAll('.eobj').forEach(el => {
+    const o = ed.objs.find(x => x.id === el.dataset.oid);
+    if (o.type === 'text') {
+      const t = el.querySelector('.etxt');
+      t.oninput = () => { o.text = t.innerText.replace(/\n$/, ''); };
+      t.onfocus = () => { if (ed.sel !== o.id) { ed.sel = o.id; markSel(); } };
+      el.querySelector('.emove').onpointerdown = e => startDrag(e, o, 'move');
+    } else {
+      el.onpointerdown = e => { if (e.target.classList.contains('ersz')) startDrag(e, o, 'size'); else startDrag(e, o, 'move'); };
+    }
+  });
+  markSel();
+}
+function markSel() {
+  document.querySelectorAll('.eobj').forEach(el => el.classList.toggle('sel', el.dataset.oid === ed.sel));
+  const bar = $('#selbar'); if (!bar) return;
+  const o = ed.objs.find(x => x.id === ed.sel);
+  if (!o) { bar.innerHTML = ''; return; }
+  bar.innerHTML = (o.type === 'text' ? '<button class="chip" data-s="smaller" aria-label="Smaller text">A−</button><button class="chip" data-s="bigger" aria-label="Bigger text">A+</button>' +
+    Object.keys(ED_COLORS).map(c => '<button class="dot' + (o.color === c ? ' on' : '') + '" data-s="c-' + c + '" style="background:' + ED_COLORS[c] + '" aria-label="' + c + '"></button>').join('') : '') +
+    '<button class="chip danger" data-s="del">🗑 ' + esc(T('Delete')) + '</button>';
+  bar.querySelectorAll('[data-s]').forEach(b => b.onclick = () => {
+    const a = b.dataset.s;
+    if (a === 'del') { ed.objs = ed.objs.filter(x => x !== o); ed.sel = null; }
+    else if (a === 'smaller') o.fs = Math.max(0.008, o.fs / 1.15);
+    else if (a === 'bigger') o.fs = Math.min(0.12, o.fs * 1.15);
+    else if (a.startsWith('c-')) o.color = a.slice(2);
+    drawObjs();
+  });
+}
+function startDrag(e, o, mode) {
+  e.preventDefault(); e.stopPropagation();
+  if (ed.sel !== o.id) { ed.sel = o.id; markSel(); }
+  const L = $('#edlayer').getBoundingClientRect(); const sx = e.clientX, sy = e.clientY; const o0 = { ...o };
+  const tgt = e.currentTarget; try { tgt.setPointerCapture(e.pointerId); } catch (er) {}
+  const el = document.querySelector('[data-oid="' + o.id + '"]');
+  tgt.onpointermove = ev => {
+    const dx = (ev.clientX - sx) / L.width, dy = (ev.clientY - sy) / L.height;
+    if (mode === 'move') {
+      o.x = clamp(o0.x + dx, -0.02, 0.98); o.y = clamp(o0.y + dy, -0.02, 0.98);
+      el.style.left = o.x * 100 + '%'; el.style.top = o.y * 100 + '%';
+    } else {
+      o.w = clamp(o0.w + dx, 0.02, 1);
+      if (o.type === 'sig') o.h = o.w * (o0.h / o0.w);
+      else if (o.type !== 'check' && o.type !== 'cross') o.h = clamp(o0.h + dy, 0.008, 1);
+      el.style.width = o.w * 100 + '%';
+      el.style.height = ((o.type === 'check' || o.type === 'cross') ? o.w * L.width : o.h * L.height) + 'px';
+    }
+  };
+  tgt.onpointerup = tgt.onpointercancel = () => { tgt.onpointermove = null; };
+}
+
+/* Signature maker: draw / type / upload */
+const SIG_FONTS = ['Dancing Script', 'Great Vibes', 'Caveat'];
+function trimCanvas(c) {
+  const ctx = c.getContext('2d'), d = ctx.getImageData(0, 0, c.width, c.height).data;
+  let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+  for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (d[(y * c.width + x) * 4 + 3] > 20) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) return null;
+  const p = 6; x0 = Math.max(0, x0 - p); y0 = Math.max(0, y0 - p); x1 = Math.min(c.width - 1, x1 + p); y1 = Math.min(c.height - 1, y1 + p);
+  const out = newCanvas(x1 - x0 + 1, y1 - y0 + 1); out.getContext('2d').drawImage(c, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  return out;
+}
+function sigMaker() {
+  let tab = 'draw', color = '#111111', fontI = 0, upCanvas = null;
+  openModal(T('Create signature'), '<div class="tabs" role="tablist">' + [['draw', '✍ ' + T('Draw')], ['type', '⌨ ' + T('Type')], ['upload', '🖼 ' + T('Upload')]].map(([k, l]) => '<button class="tab" data-tab="' + k + '" role="tab">' + esc(l) + '</button>').join('') + '</div><div id="sigbody"></div>',
+    '<button class="chip" id="sigclear">↺ ' + esc(T('Clear')) + '</button><button class="save" id="sigok">' + esc(T('Use signature')) + '</button>');
+  const body = $('#sigbody');
+  const colors = () => '<div class="sigcolors">' + ['#111111', '#1d3fbf'].map(c => '<button class="dot' + (c === color ? ' on' : '') + '" data-col="' + c + '" style="background:' + c + '" aria-label="' + (c === '#111111' ? 'black' : 'blue') + '"></button>').join('') + '</div>';
+  let pad;
+  const show = () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+    if (tab === 'draw') {
+      body.innerHTML = '<canvas id="sigpad" class="sigpad"></canvas><p class="mute center">' + esc(T('Sign with your finger in the box')) + '</p>' + colors();
+      pad = $('#sigpad'); const r = pad.getBoundingClientRect(); pad.width = Math.round(r.width * 2); pad.height = Math.round(r.width * 2 * 0.4);
+      const ctx = pad.getContext('2d'); ctx.lineCap = ctx.lineJoin = 'round';
+      let last = null;
+      const pt = e => { const b = pad.getBoundingClientRect(); return [(e.clientX - b.left) * pad.width / b.width, (e.clientY - b.top) * pad.height / b.height]; };
+      pad.onpointerdown = e => { e.preventDefault(); pad.setPointerCapture(e.pointerId); last = pt(e); ctx.fillStyle = color; ctx.beginPath(); ctx.arc(last[0], last[1], 2.5, 0, 7); ctx.fill(); };
+      pad.onpointermove = e => { if (!last) return; const p = pt(e); ctx.strokeStyle = color; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(p[0], p[1]); ctx.stroke(); last = p; };
+      pad.onpointerup = pad.onpointercancel = () => { last = null; };
+    } else if (tab === 'type') {
+      body.innerHTML = '<input type="text" id="signame" class="signame" placeholder="' + esc(T('Your name')) + '" autocomplete="name"><div class="sigfonts">' + SIG_FONTS.map((f, i) => '<button class="sigfont' + (i === fontI ? ' on' : '') + '" data-font="' + i + '" style="font-family:\'' + f + '\',cursive">' + esc(T('Signature')) + '</button>').join('') + '</div>' + colors();
+      const n = $('#signame'); n.oninput = () => body.querySelectorAll('.sigfont').forEach(b => b.textContent = n.value || T('Signature'));
+      setTimeout(() => n.focus(), 50);
+      body.querySelectorAll('[data-font]').forEach(b => b.onclick = () => { fontI = +b.dataset.font; body.querySelectorAll('.sigfont').forEach(x => x.classList.toggle('on', x === b)); });
+    } else {
+      body.innerHTML = '<label class="drop"><input type="file" id="sigfile" accept="image/*" hidden><b>' + esc(T('Choose a photo of your signature')) + '</b><small>' + esc(T('Sign on white paper; the background is removed automatically')) + '</small></label><div id="sigprev" class="sigprev"></div>';
+      $('#sigfile').onchange = async () => {
+        const f = $('#sigfile').files[0]; if (!f) return;
+        const c = await fileToCanvas(f, 1, '#ffffff', 1600);
+        const ctx = c.getContext('2d'), id = ctx.getImageData(0, 0, c.width, c.height), d = id.data;
+        for (let i = 0; i < d.length; i += 4) { const l = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114; const a = l > 185 ? 0 : l < 110 ? 255 : Math.round((185 - l) / 75 * 255); d[i + 3] = a; }
+        ctx.putImageData(id, 0, 0); upCanvas = trimCanvas(c);
+        $('#sigprev').innerHTML = upCanvas ? '<img src="' + upCanvas.toDataURL() + '" alt="">' : '<p class="mute">' + esc(T('No signature found in this photo.')) + '</p>';
+      };
+    }
+    body.querySelectorAll('[data-col]').forEach(b => b.onclick = () => { color = b.dataset.col; body.querySelectorAll('[data-col]').forEach(x => x.classList.toggle('on', x === b)); });
+  };
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => { tab = t.dataset.tab; show(); });
+  $('#sigclear').onclick = () => { upCanvas = null; show(); };
+  $('#sigok').onclick = async () => {
+    let c = null;
+    if (tab === 'draw') c = trimCanvas(pad);
+    else if (tab === 'type') {
+      const name = ($('#signame').value || '').trim(); if (!name) { toast(T('Type your name first')); return; }
+      const fam = SIG_FONTS[fontI];
+      try { await document.fonts.load('96px "' + fam + '"', name); } catch (e) {}
+      const t = newCanvas(1400, 300); const ctx = t.getContext('2d'); ctx.font = '120px "' + fam + '", cursive'; ctx.fillStyle = color; ctx.textBaseline = 'middle'; ctx.fillText(name, 20, 150);
+      c = trimCanvas(t);
+    } else c = upCanvas;
+    if (!c) { toast(T('Please add your signature first')); return; }
+    ed.sig = { url: c.toDataURL('image/png'), w: c.width, h: c.height };
+    closeModal(); placeSig();
+  };
+  ensureSigFonts();
+  show();
+}
+let sigFontsAdded = false;
+function ensureSigFonts() {
+  if (sigFontsAdded) return; sigFontsAdded = true;
+  const l = document.createElement('link'); l.rel = 'stylesheet';
+  l.href = 'https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Dancing+Script:wght@600&family=Great+Vibes&display=swap';
+  document.head.appendChild(l);
+}
+
+/* Save: draw everything into the real PDF */
+const WIN_ANSI_OK = /^[\x20-\x7E -ÿ‘’“”–—•€…™]*$/;
+function textToPng(text, sizePx, color) {
+  const c = newCanvas(10, 10); let ctx = c.getContext('2d'); const font = sizePx + 'px Arial, "Noto Sans", "Noto Sans Devanagari", sans-serif';
+  ctx.font = font; const w = Math.ceil(ctx.measureText(text).width) + 4;
+  const out = newCanvas(w, Math.ceil(sizePx * 1.3)); ctx = out.getContext('2d'); ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'alphabetic'; ctx.fillText(text, 2, Math.ceil(sizePx * 1.02));
+  return out;
+}
+async function runEditPdf(files, o, st) {
+  const f = files[0];
+  if (!ed.doc || ed.file !== f) throw new Error('The PDF is still loading – please wait a moment.');
+  const P = PDFLib;
+  st(T('Saving changes…'), 0.2);
+  const pdf = await openPdfLib(f);
+  const font = await pdf.embedFont(P.StandardFonts.Helvetica);
+  const warns = [];
+  // 1) form fields
+  if (ed.fields.length) {
+    const form = pdf.getForm();
+    for (const fd of ed.fields) {
+      if (!fd.touched) continue;
+      try {
+        if (fd.type === 'text') { if (!WIN_ANSI_OK.test(fd.value)) { warns.push(fd.name); continue; } form.getTextField(fd.name).setText(fd.value); }
+        else if (fd.type === 'check') { const cb = form.getCheckBox(fd.name); fd.value ? cb.check() : cb.uncheck(); }
+        else if (fd.type === 'radio') { if (fd.value) form.getRadioGroup(fd.name).select(fd.value); }
+        else if (fd.type === 'drop') { if (fd.value) { const fl = form.getField(fd.name); fl.select(fd.value); } }
+      } catch (e) { warns.push(fd.name); }
+    }
+    if (o.flatten === 'flatten') { try { form.updateFieldAppearances(font); form.flatten(); } catch (e) { warns.push('flatten'); } }
+  }
+  // 2) added items
+  const pages = [...new Set(ed.objs.map(x => x.page))];
+  const sigCache = {};
+  for (let pi = 0; pi < pages.length; pi++) {
+    const pn = pages[pi];
+    st(T('Saving changes…'), 0.3 + 0.6 * pi / pages.length);
+    const page = pdf.getPage(pn - 1);
+    const vp = (await ed.doc.getPage(pn)).getViewport({ scale: 1 });
+    const Pt = (vx, vy) => vp.convertToPdfPoint(vx, vy);
+    const o0 = Pt(0, 0), o1 = Pt(1, 0); const rotRad = Math.atan2(o1[1] - o0[1], o1[0] - o0[0]);
+    const rot = P.degrees(rotRad * 180 / Math.PI);
+    const rx = Math.cos(rotRad), ry = Math.sin(rotRad), ux = -ry, uy = rx; // page "right" and "up" directions in PDF space
+    for (const ob of ed.objs.filter(x => x.page === pn)) {
+      const X = ob.x * vp.width, Y = ob.y * vp.height;
+      if (ob.type === 'text') {
+        const size = ob.fs * vp.width, col = ED_COLORS[ob.color];
+        const rgb = P.rgb(parseInt(col.slice(1, 3), 16) / 255, parseInt(col.slice(3, 5), 16) / 255, parseInt(col.slice(5, 7), 16) / 255);
+        const pad = size * 0.2;
+        (ob.text || '').split('\n').forEach((line, i) => {
+          if (!line) return;
+          const base = Pt(X + pad, Y + pad + size * 0.97 + i * size * 1.25);
+          if (WIN_ANSI_OK.test(line)) page.drawText(line, { x: base[0], y: base[1], size, font, color: rgb, rotate: rot });
+          else {
+            const c = textToPng(line, 64, col), k = size / 64;
+            const top = Pt(X + pad - 2 * k, Y + pad + i * size * 1.25 + size * 0.97 - 64 * 1.02 * k);
+            const hpt = c.height * k;
+            sigCache[line + col] = sigCache[line + col] || pdf.embedPng(c.toDataURL('image/png'));
+            pendingImgs.push([page, sigCache[line + col], top[0] - ux * hpt, top[1] - uy * hpt, c.width * k, hpt, rot]);
+          }
+        });
+      } else {
+        const w = ob.w * vp.width, h = (ob.type === 'check' || ob.type === 'cross') ? w : ob.h * vp.height;
+        const bl = Pt(X, Y + h);
+        const Q = (u, v) => ({ x: bl[0] + rx * w * u + ux * h * v, y: bl[1] + ry * w * u + uy * h * v });
+        if (ob.type === 'white' || ob.type === 'hl')
+          page.drawRectangle({ x: bl[0], y: bl[1], width: w, height: h, rotate: rot, color: ob.type === 'white' ? P.rgb(1, 1, 1) : P.rgb(1, 0.92, 0.2), opacity: ob.type === 'white' ? 1 : 0.4, borderWidth: 0 });
+        else if (ob.type === 'check' || ob.type === 'cross') {
+          const segs = ob.type === 'check' ? [[0.1, 0.5, 0.4, 0.15], [0.4, 0.15, 0.9, 0.85]] : [[0.15, 0.85, 0.85, 0.15], [0.15, 0.15, 0.85, 0.85]];
+          for (const [a, b2, c2, d2] of segs) page.drawLine({ start: Q(a, b2), end: Q(c2, d2), thickness: w * 0.11, color: P.rgb(0.07, 0.07, 0.07), lineCap: P.LineCapStyle.Round });
+        } else if (ob.type === 'sig') {
+          sigCache[ob.img] = sigCache[ob.img] || pdf.embedPng(ob.img);
+          pendingImgs.push([page, sigCache[ob.img], bl[0], bl[1], w, h, rot]);
+        }
+      }
+    }
+  }
+  for (const [page, imgP, x, y, width, height, rotate] of pendingImgs.splice(0)) page.drawImage(await imgP, { x, y, width, height, rotate });
+  st(T('Saving changes…'), 0.95);
+  const bytes = await pdf.save();
+  const out = [{ name: base(f.name) + (ed.tool === 'sign-pdf' ? '-signed' : '-edited') + '.pdf', blob: pdfBlob(bytes), info: ed.objs.length + ' ' + T('items added') + (ed.fields.some(x => x.touched) ? ' · ' + T('form filled') : '') }];
+  if (warns.length) out.msg = '⚠️ ' + T('Saved, but some form fields could not be filled (Hindi text is not supported inside form fields – use “Text” instead):') + ' ' + warns.filter(w => w !== 'flatten').join(', ');
+  return out;
+}
+const pendingImgs = [];
+
+/* ---------- Excel / CSV → PDF ---------- */
+function colIndex(ref) { let n = 0; for (const ch of ref.replace(/\d+/g, '')) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; }
+function parseCsv(text) {
+  const rows = []; let row = [], cell = '', q = false;
+  const delim = (text.split('\n')[0].match(/;/g) || []).length > (text.split('\n')[0].match(/,/g) || []).length ? ';' : ',';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === delim) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+const BUILTIN_DATE = new Set([14, 15, 16, 17, 22, 45, 46, 47]);
+function fmtCell(v, fmtCode, id) {
+  const n = parseFloat(v);
+  if (isNaN(n)) return v;
+  const code = (fmtCode || '').replace(/"[^"]*"|\[[^\]]*\]|\\./g, '');
+  const isDate = BUILTIN_DATE.has(id) || (/[dmy]/i.test(code) && !/^general$/i.test(code));
+  if (isDate) {
+    const d = new Date(Math.round((n - 25569) * 86400000));
+    const dd = String(d.getUTCDate()).padStart(2, '0'), mm = String(d.getUTCMonth() + 1).padStart(2, '0'), yy = d.getUTCFullYear();
+    const hasTime = /h/i.test(code) || id === 22;
+    const ds = n >= 1 ? dd + '/' + mm + '/' + yy : '';
+    const ts = hasTime ? String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') : '';
+    return [ds, ts].filter(Boolean).join(' ') || v;
+  }
+  if (/%/.test(code) || id === 9 || id === 10) { const dec = (code.split('.')[1] || '').replace(/[^0]/g, '').length || (id === 10 ? 2 : 0); return (n * 100).toFixed(dec) + '%'; }
+  const decM = code.match(/0\.(0+)/); const thou = /#,##|0,0/.test(code) || id === 3 || id === 4;
+  let s = decM ? n.toFixed(decM[1].length) : id === 2 || id === 4 ? n.toFixed(2) : String(+n.toPrecision(12));
+  if (thou) { const [a, b] = s.split('.'); s = a.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (b ? '.' + b : ''); }
+  return s;
+}
+async function readSpreadsheet(file) {
+  if (/\.(csv|txt)$/i.test(file.name)) return [{ name: base(file.name), rows: parseCsv(await file.text()) }];
+  if (/\.xls$/i.test(file.name)) throw new Error('Old .xls files are not supported – open it and save as .xlsx (or .csv) first.');
+  if (!/\.(xlsx|xlsm)$/i.test(file.name)) throw new Error('"' + file.name + '" is not an Excel (.xlsx) or CSV file.');
+  await load('jszip');
+  let zip; try { zip = await JSZip.loadAsync(await file.arrayBuffer()); } catch (e) { throw new Error('Could not open "' + file.name + '". It may be damaged or password-protected.'); }
+  const xml = async p => { const f = zip.file(p); return f ? new DOMParser().parseFromString(await f.async('string'), 'application/xml') : null; };
+  const all = (node, tag) => node ? [...node.getElementsByTagNameNS('*', tag)] : [];
+  const shared = all(await xml('xl/sharedStrings.xml'), 'si').map(si => all(si, 't').map(t => t.textContent).join(''));
+  const styles = await xml('xl/styles.xml');
+  const fmts = {}; all(styles, 'numFmt').forEach(n => fmts[+n.getAttribute('numFmtId')] = n.getAttribute('formatCode'));
+  const xfsNode = all(styles, 'cellXfs')[0]; const xfs = xfsNode ? all(xfsNode, 'xf').map(x => +x.getAttribute('numFmtId') || 0) : [];
+  const wb = await xml('xl/workbook.xml'); const rels = await xml('xl/_rels/workbook.xml.rels');
+  const relMap = {}; all(rels, 'Relationship').forEach(r => relMap[r.getAttribute('Id')] = r.getAttribute('Target'));
+  const sheets = [];
+  for (const sh of all(wb, 'sheet')) {
+    if (sh.getAttribute('state') === 'hidden' || sh.getAttribute('state') === 'veryHidden') continue;
+    const rid = sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || sh.getAttribute('r:id');
+    let target = relMap[rid] || ''; target = target.replace(/^\/?xl\//, '').replace(/^\//, '');
+    const doc = await xml('xl/' + target); if (!doc) continue;
+    const rows = [], widths = {};
+    all(doc, 'col').forEach(c => { for (let i = +c.getAttribute('min'); i <= +c.getAttribute('max') && i < 200; i++) widths[i - 1] = +c.getAttribute('width'); });
+    for (const r of all(doc, 'row')) {
+      const ri = (+r.getAttribute('r') || rows.length + 1) - 1; const row = rows[ri] = rows[ri] || [];
+      for (const c of all(r, 'c')) {
+        const ref = c.getAttribute('r'); const ci = ref ? colIndex(ref) : row.length; const t = c.getAttribute('t');
+        const vEl = all(c, 'v')[0]; let v = vEl ? vEl.textContent : '';
+        if (t === 's') v = shared[+v] || '';
+        else if (t === 'inlineStr') v = all(c, 't').map(x => x.textContent).join('');
+        else if (t === 'b') v = v === '1' ? 'TRUE' : 'FALSE';
+        else if (t !== 'str' && t !== 'e' && v !== '') { const id = xfs[+c.getAttribute('s') || 0] || 0; v = fmtCell(v, fmts[id], id); }
+        row[ci] = v;
+      }
+    }
+    for (let i = 0; i < rows.length; i++) rows[i] = rows[i] || [];
+    sheets.push({ name: sh.getAttribute('name'), rows, widths });
+  }
+  return sheets;
+}
+function tidyRows(rows) {
+  rows = rows.map(r => Array.from({ length: r.length }, (_, i) => r[i] == null ? '' : String(r[i])));
+  while (rows.length && rows[rows.length - 1].every(x => !x.trim())) rows.pop();
+  let cols = 0; rows.forEach(r => { for (let i = r.length - 1; i >= 0; i--) if (r[i].trim()) { cols = Math.max(cols, i + 1); break; } });
+  return { rows: rows.map(r => Array.from({ length: cols }, (_, i) => r[i] || '')), cols };
+}
+const ansi = s => s.replace(/[^\x20-\x7E -ÿ‘’“”–—•€…™]/g, '?');
+function wrapText(t, font, size, maxW) {
+  const out = [];
+  for (const para of t.split(/\r?\n/)) {
+    let line = '';
+    for (const word of para.split(/(\s+)/)) {
+      const tryL = line + word;
+      if (font.widthOfTextAtSize(tryL, size) <= maxW || !line.trim()) {
+        if (font.widthOfTextAtSize(tryL, size) > maxW && !line.trim()) { // single long word: hard-break
+          let w = ''; for (const ch of tryL) { if (font.widthOfTextAtSize(w + ch, size) > maxW && w) { out.push(w); w = ''; } w += ch; } line = w;
+        } else line = tryL;
+      } else { out.push(line.trimEnd()); line = word.trimStart(); }
+    }
+    out.push(line.trimEnd());
+  }
+  return out.length ? out : [''];
+}
+async function runExcelToPdf(files, o, st) {
+  if (o.mode === 'print') return printSheets(files[0], o, st);
+  await load('pdflib');
+  const P = PDFLib, out = [];
+  for (let fi = 0; fi < files.length; fi++) {
+    const f = files[fi];
+    st(T('Reading') + ' ' + f.name + '…', fi / files.length);
+    let sheets = await readSpreadsheet(f);
+    if (o.sheets === 'first') sheets = sheets.slice(0, 1);
+    const pdf = await P.PDFDocument.create();
+    const font = await pdf.embedFont(P.StandardFonts.Helvetica), bold = await pdf.embedFont(P.StandardFonts.HelveticaBold);
+    let replaced = false, any = false;
+    for (const sh of sheets) {
+      const { rows, cols } = tidyRows(sh.rows);
+      if (!rows.length || !cols) continue;
+      any = true;
+      const cells = rows.map(r => r.map(v => { const a = ansi(v); if (a !== v) replaced = true; return a; }));
+      // natural column widths at 10pt
+      const nat = Array.from({ length: cols }, (_, c) => {
+        let w = 0; for (const r of cells.slice(0, 500)) w = Math.max(w, ...r[c].split('\n').map(x => font.widthOfTextAtSize(x, 10)));
+        if (sh.widths && sh.widths[c]) w = Math.max(Math.min(w, 260), sh.widths[c] * 5.2);
+        return Math.min(Math.max(w + 8, 22), 260);
+      });
+      const total = nat.reduce((a, b) => a + b, 0), M = 28;
+      const land = o.orient === 'landscape' || (o.orient === 'auto' && total > A4[0] - 2 * M);
+      const [PW, PH] = land ? [A4[1], A4[0]] : A4;
+      const usable = PW - 2 * M;
+      const k = Math.min(1.2, usable / total), size = Math.max(5.5, 10 * k);
+      let colW = nat.map(w => w * k); const sumW = colW.reduce((a, b) => a + b, 0);
+      if (sumW > usable) colW = colW.map(w => w * usable / sumW);
+      const lineH = size * 1.25, padX = 3 * Math.min(1, k + 0.2), padY = 2.5;
+      const head = o.header === 'yes' && rows.length > 1;
+      const rowLines = cells.map((r, ri) => r.map((v, c) => wrapText(v, ri === 0 && head ? bold : font, size, colW[c] - 2 * padX)));
+      const rowH = rowLines.map(ls => Math.max(...ls.map(l => l.length)) * lineH + 2 * padY);
+      let page, y, pageNo = 0;
+      const newPage = () => {
+        page = pdf.addPage([PW, PH]); pageNo++; y = PH - M;
+        page.drawText(ansi(sh.name) + (pageNo > 1 ? ' (' + pageNo + ')' : ''), { x: M, y: y - 9, size: 9, font: bold, color: P.rgb(0.35, 0.35, 0.4) }); y -= 16;
+      };
+      const drawRow = ri => {
+        let x = M; const h = rowH[ri], isHead = head && ri === 0;
+        if (isHead) page.drawRectangle({ x: M, y: y - h, width: colW.reduce((a, b) => a + b, 0), height: h, color: P.rgb(0.91, 0.93, 0.97) });
+        for (let c = 0; c < cols; c++) {
+          page.drawRectangle({ x, y: y - h, width: colW[c], height: h, borderColor: P.rgb(0.72, 0.74, 0.78), borderWidth: 0.4 });
+          const num = /^-?[\d,]+(\.\d+)?%?$/.test(cells[ri][c].trim());
+          rowLines[ri][c].forEach((ln, li) => {
+            if (!ln) return;
+            const f2 = isHead ? bold : font, tw = f2.widthOfTextAtSize(ln, size);
+            page.drawText(ln, { x: num && !isHead ? x + colW[c] - padX - tw : x + padX, y: y - padY - size * 0.95 - li * lineH, size, font: f2, color: P.rgb(0.07, 0.07, 0.1) });
+          });
+          x += colW[c];
+        }
+        y -= h;
+      };
+      newPage();
+      for (let ri = 0; ri < rows.length; ri++) {
+        if (ri % 40 === 0) { st(f.name + ' · ' + sh.name + ': ' + T('row') + ' ' + (ri + 1) + ' / ' + rows.length, (fi + ri / rows.length) / files.length); await tick(); }
+        if (y - rowH[ri] < M && ri > 0) { newPage(); if (head && ri > 0) drawRow(0); }
+        drawRow(ri);
+      }
+    }
+    if (!any) throw new Error('"' + f.name + '" has no data to convert.');
+    out.push({ name: base(f.name) + '.pdf', blob: pdfBlob(await pdf.save()), info: pdf.getPageCount() + ' ' + T('pages') + (replaced ? ' · ⚠️ ' + T('some characters need Best mode') : '') });
+  }
+  return out;
+}
+async function printSheets(file, o, st) {
+  if (inClaude) throw new Error('This mode works on the live website (it uses your browser’s Print → Save as PDF). Inside the Claude preview, use "Quick" mode.');
+  st(T('Reading') + ' ' + file.name + '…', 0.3);
+  let sheets = await readSpreadsheet(file); if (o.sheets === 'first') sheets = sheets.slice(0, 1);
+  const html = sheets.map(sh => { const { rows } = tidyRows(sh.rows); if (!rows.length) return ''; const head = o.header === 'yes' && rows.length > 1;
+    return '<h2>' + esc(sh.name) + '</h2><table>' + (head ? '<thead><tr>' + rows[0].map(v => '<th>' + esc(v) + '</th>').join('') + '</tr></thead>' : '') + '<tbody>' + rows.slice(head ? 1 : 0).map(r => '<tr>' + r.map(v => '<td' + (/^-?[\d,]+(\.\d+)?%?$/.test(v.trim()) ? ' class="n"' : '') + '>' + esc(v).replace(/\n/g, '<br>') + '</td>').join('') + '</tr>').join('') + '</tbody></table>'; }).join('<div class="pb"></div>');
+  const orient = o.orient === 'portrait' ? 'portrait' : 'landscape';
+  const fr = document.createElement('iframe'); fr.className = 'printframe'; document.body.appendChild(fr);
+  const d = fr.contentDocument; d.open();
+  d.write('<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + esc(base(file.name)) + '</title><style>@page{size:A4 ' + orient + ';margin:12mm}body{font:9pt Arial,"Noto Sans","Noto Sans Devanagari",sans-serif;margin:0}h2{font-size:10pt;color:#555;margin:0 0 4pt}table{border-collapse:collapse;width:100%}th,td{border:0.5pt solid #aaa;padding:2pt 4pt;vertical-align:top;word-break:break-word}th{background:#e8edf7;text-align:left}td.n{text-align:right}thead{display:table-header-group}tr{page-break-inside:avoid}.pb{page-break-after:always}</style></head><body>' + html + '</body></html>');
+  d.close();
+  await new Promise(r => setTimeout(r, 300));
+  st(T('Opening print window…'), 0.9);
+  try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { fr.remove(); throw new Error('Printing is blocked here. Use "Quick" mode instead.'); }
+  setTimeout(() => fr.remove(), 60000);
+  const out = []; out.msg = T('In the print window, choose "Save as PDF" as the printer, then tap Save / Download.');
+  return out;
+}
+
 /* ---------- Tool catalogue ---------- */
 const IMG_ACCEPT = 'image/*,.heic,.heif';
 const PDF_ACCEPT = 'application/pdf,.pdf';
@@ -1122,11 +1624,19 @@ const TOOLS = [
   { id: 'ocr', libs: ['tess', 'pdfjs', 'jszip'], cat: 'conv', badge: 'OCR', title: 'OCR – scan to text', desc: 'Read text from photos or scanned PDFs. English, Hindi, Gujarati.', seo: 'OCR Online – Image to Text, Scanned PDF to Text (Hindi, Gujarati)', accept: IMG_ACCEPT + ',' + PDF_ACCEPT, hint: 'Images or scanned PDFs', multi: true, btn: 'Recognise text',
     opts: [OCR_LANG, { k: 'out', label: 'Save as', type: 'select', options: [['docx', 'Word (.docx)'], ['txt', 'Text (.txt)'], ['pdf', 'Searchable PDF']] }], run: runOcr,
     note: 'First use downloads the OCR engine and language data (about 2–15 MB). Clear, straight photos work best.' },
+  { id: 'excel-to-pdf', libs: ['jszip', 'pdflib'], cat: 'conv', badge: 'XLSX → PDF', title: 'Excel to PDF', desc: 'Turn spreadsheets (.xlsx, .csv) into a neat PDF table.', seo: 'Excel to PDF Converter (XLSX and CSV to PDF)', accept: '.xlsx,.xlsm,.csv,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv', hint: '.xlsx or .csv files', multi: true, btn: 'Convert to PDF',
+    opts: [{ k: 'mode', label: 'Quality', type: 'select', options: [['quick', 'Quick – direct download'], ['print', 'Best – any language (Print → Save as PDF)']] }, { k: 'orient', label: 'Page', type: 'select', options: [['auto', 'Auto (landscape if wide)'], ['portrait', 'Portrait'], ['landscape', 'Landscape']] },
+      { k: 'header', label: 'First row is a heading', type: 'select', options: [['yes', 'Yes – repeat on every page'], ['no', 'No']] }, { k: 'sheets', label: 'Sheets', type: 'select', options: [['all', 'All sheets'], ['first', 'First sheet only']] }], run: runExcelToPdf,
+    note: 'Values, dates and numbers are kept as shown in Excel. Charts, pictures, colours and merged cells are not copied. Quick mode supports English text; use Best mode for Hindi.' },
   { id: 'word-to-image', libs: ['mammoth', 'h2c', 'jszip'], cat: 'conv', badge: 'DOCX → IMG', title: 'Word to Image', desc: 'Each page of a .docx becomes an image.', seo: 'Word to JPG Converter', accept: DOCX_ACCEPT, hint: '.docx files', multi: true, btn: 'Convert to images', opts: [fmtImgOpt], run: runWordToImg },
   { id: 'image-to-word', libs: ['jszip', 'heic'], cat: 'conv', badge: 'IMG → DOCX', title: 'Image to Word', desc: 'Put photos into a Word document.', seo: 'JPG to Word Converter', accept: IMG_ACCEPT, hint: 'Add images in the order you want', multi: true, btn: 'Create Word file',
     opts: [{ k: 'layout', label: 'Layout', type: 'select', options: [['page', 'One image per page'], ['flow', 'One after another']] }], run: runImgToWord,
     note: 'This places the pictures in Word. To get editable text from a photo, use the OCR tool.' },
   { id: 'pdf-to-text', libs: ['pdfjs'], cat: 'conv', badge: 'PDF → TXT', title: 'PDF to Text', desc: 'Pull all the text out of a PDF.', seo: 'PDF to Text Converter', accept: PDF_ACCEPT, hint: 'PDF files', multi: true, btn: 'Extract text', run: runPdfToText },
+  { id: 'sign-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'SIGN', title: 'Sign PDF', desc: 'Draw, type or upload your signature and place it on the PDF.', seo: 'Sign PDF Online Free – Add Signature to PDF', accept: PDF_ACCEPT, hint: 'PDF file', multi: false, btn: 'Save signed PDF', run: runEditPdf, onFiles: editorLoad },
+  { id: 'edit-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'EDIT · FILL', title: 'Edit & fill PDF', desc: 'Add text, ticks, dates, white-out and signatures. Fill PDF forms.', seo: 'Edit PDF and Fill PDF Forms Online Free', accept: PDF_ACCEPT, hint: 'PDF file', multi: false, btn: 'Save PDF', run: runEditPdf, onFiles: editorLoad,
+    opts: [{ k: 'flatten', label: 'Form fields after saving', type: 'select', options: [['keep', 'Stay editable'], ['flatten', 'Locked (cannot be changed)']], hint: 'Only matters if the PDF has fillable form fields' }],
+    note: 'Text already printed in the PDF cannot be changed directly – cover it with White-out and type the new text on top. White-out only hides text visually; it is not secure for removing private information.' },
   { id: 'compress-pdf', libs: ['pdflib', 'pdfjs'], cat: 'pdf', badge: 'COMPRESS', title: 'Compress PDF', desc: 'Make PDFs smaller – choose a level or a target KB.', seo: 'Compress PDF to 100 KB, 200 KB, 500 KB', accept: PDF_ACCEPT, hint: 'PDF files', multi: true, btn: 'Compress PDF',
     opts: [{ k: 'method', label: 'Method', type: 'select', options: [['smart', 'Smart – keep text sharp (recommended)'], ['image', 'Maximum – turn pages into images']] }, { k: 'level', label: 'Compression', type: 'select', options: [['medium', 'Medium (recommended)'], ['low', 'Low (best quality)'], ['strong', 'Strong'], ['extreme', 'Extreme (smallest)']] }, { k: 'target', label: 'Or target size (KB)', type: 'num', ph: 'e.g. 200', hint: 'If filled, the level above is ignored' }], run: runCompress,
     note: 'Smart mode shrinks only the pictures inside the PDF, so text stays sharp and selectable. If a target KB cannot be reached that way, pages are turned into images (text can then no longer be selected). Keep your original file.' },
