@@ -2284,6 +2284,9 @@ async function shareFile(r) {
   try { await navigator.share({ files: [new File([r.blob], r.name, { type: MIME[r.name.split('.').pop().toLowerCase()] || r.blob.type })], title: r.name }); }
   catch (e) { if (e && e.name !== 'AbortError') toast(T('Sharing is not available here – use Save.')); }
 }
+const ICON_SHARE = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>';
+const ICON_EYE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_SAVE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M6.5 10.5L12 16l5.5-5.5M4 20h16"/></svg>';
 function showResults() {
   const box = $('#results'); const R = state.results;
   box.innerHTML = R.map((r, i) => {
@@ -2293,9 +2296,9 @@ function showResults() {
     else thumb = '<span class="ic" style="background:' + (EXT_COLOR[ext] || '#64748b') + '">' + ext.toUpperCase() + '</span>';
     const canPrev = /^(jpg|png|webp|pdf|docx|txt)$/.test(ext);
     return '<div class="res">' + thumb + '<div class="meta"><div>' + esc(r.name) + '</div><small>' + fmtSize(r.blob.size) + (r.info ? ' · ' + esc(r.info) : '') + '</small></div>' +
-      '<div class="ract">' + (canPrev ? '<button class="rb" data-pv="' + i + '" aria-label="' + esc(T('Preview')) + '" title="' + esc(T('Preview')) + '">👁</button>' : '') +
-      (canShareFile(r) ? '<button class="rb" data-sh="' + i + '" aria-label="' + esc(T('Share')) + '" title="' + esc(T('Share')) + '">⇪</button>' : '') +
-      '<button class="save" data-i="' + i + '">' + esc(T('Save')) + '</button></div></div>';
+      '<div class="ract">' + (canPrev ? '<button class="rb" data-pv="' + i + '">' + ICON_EYE + '<span>' + esc(T('View')) + '</span></button>' : '') +
+      (canShareFile(r) ? '<button class="rb share" data-sh="' + i + '">' + ICON_SHARE + '<span>' + esc(T('Share')) + '</span></button>' : '') +
+      '<button class="save" data-i="' + i + '">' + ICON_SAVE + '<span>' + esc(T('Save')) + '</span></button></div></div>';
   }).join('') + (R.length > 1 ? '<button class="save saveall" id="saveall">' + esc(T('Save all as ZIP')) + '</button>' : '');
   box.querySelectorAll('.save[data-i]').forEach(b => b.onclick = () => { const r = R[+b.dataset.i]; saveBlob(r.name, r.blob); });
   box.querySelectorAll('[data-pv]').forEach(b => b.onclick = () => preview(R[+b.dataset.pv]));
