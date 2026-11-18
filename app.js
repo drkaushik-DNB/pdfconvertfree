@@ -2020,8 +2020,8 @@ function goHome() {
 }
 function renderHeader(tool) {
   $('#hdr').innerHTML = '<div class="topbar">' + (tool ? '<button class="back" id="back">← ' + esc(T('All tools')) + '</button>' : '<span></span>') + langPicker() + '</div>' +
-    (tool ? '<div class="logo"><i>⇄</i><h1>' + esc(T(tool.title)) + '</h1></div><p>' + esc(T(tool.desc)) + '</p>'
-      : '<div class="logo"><i>⇄</i><h1>PDF Convert Free</h1></div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
+    (tool ? '<div class="logo"><img src="' + BASE + 'logo-96.png" alt=""><h1>' + esc(T(tool.title)) + '</h1></div><p>' + esc(T(tool.desc)) + '</p>'
+      : '<div class="logo"><img src="' + BASE + 'logo-96.png" alt=""><h1>PDF Convert Free</h1></div><p>' + esc(T('Convert images, PDFs and Word files – free, fast and right on your phone.')) + '</p><span class="privacy">🔒 ' + esc(T('Files never leave your device')) + '</span>' +
         (installEvt ? ' <button class="privacy install" id="install">⬇ ' + esc(T('Install app')) + '</button>' : ''));
   const b = $('#back'); if (b) b.onclick = goHome;
   const ins = $('#install'); if (ins) ins.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderHeader(state.tool); };

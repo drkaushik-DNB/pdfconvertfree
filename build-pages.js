@@ -15,7 +15,7 @@ for (const t of tools) {
     .replace(/<title>[^<]*<\/title>/, '<title>' + esc(title) + '</title>')
     .replace(/<meta name="description" content="[^"]*">/, '<meta name="description" content="' + esc(desc) + '">')
     .replace(/<link rel="canonical" href="[^"]*">/, '<link rel="canonical" href="' + SITE + t.id + '/">')
-    .replace('href="manifest.json"', 'href="../manifest.json"').replace(/href="icon-192.png"/g, 'href="../icon-192.png"')
+    .replace(/href="(manifest\.json|[\w-]+\.png)"/g, 'href="../$1"')
     .replace('<script src="i18n.js"></script>', '<script src="../i18n.js"></script>').replace('<script src="app.js"></script>', '<script src="../app.js"></script>')
     .replace('<body data-base="">', '<body data-base="../" data-tool="' + t.id + '">')
     .replace('<main id="main"></main>', '<main id="main"><h1>' + esc(t.seo) + '</h1><p>' + esc(desc) + '</p></main>');
