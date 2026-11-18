@@ -1,7 +1,7 @@
 /* PDF Convert Free offline cache.
    Site files: network first (always newest when online), cache when offline.
    Converter libraries from CDNs: cache first (they never change). */
-const CACHE = 'pdfconvertfree-v12';
+const CACHE = 'pdfconvertfree-v13';
 const CORE = ['./', './index.html', './app.js', './i18n.js', './manifest.json', './icon-192.png', './icon-512.png', './logo-96.png', './favicon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE)

@@ -231,6 +231,7 @@ hi: {
 "Cancelled.": "रद्द कर दिया।",
 "Sharing is not available here – use Save.": "यहाँ शेयर उपलब्ध नहीं है – सेव करें।",
 "Preview": "देखें",
+"Popular": "लोकप्रिय",
 "View": "देखें",
 "Share": "शेयर करें",
 "Loading preview…": "प्रीव्यू लोड हो रहा है…",
