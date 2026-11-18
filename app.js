@@ -416,42 +416,46 @@ function paperBackground(c) {
   const big = newCanvas(W, H), bx = big.getContext('2d'); bx.imageSmoothingQuality = 'high'; bx.drawImage(sm, 0, 0, W, H);
   return bx.getImageData(0, 0, W, H).data;
 }
-function docFilter(c, mode) {
+function docFilter(c, mode, strong) {
   if (mode === 'original') return c;
   const ctx = c.getContext('2d'), w = c.width, h = c.height, n = w * h;
   const id = ctx.getImageData(0, 0, w, h), d = id.data;
   const bg = paperBackground(c);
-  const BLACK = 28, WHITE = 232, k = 255 / (WHITE - BLACK);
-  // 1) flatten lighting + white balance, then stretch contrast (dark text, white paper)
-  for (let i = 0; i < n * 4; i += 4) {
-    for (let ch = 0; ch < 3; ch++) {
-      const v = d[i + ch] / Math.max(bg[i + ch], 30) * 255;
-      d[i + ch] = (v - BLACK) * k;
-    }
-  }
+  // 1) flatten lighting + white balance: divide by the paper colour at each point
+  for (let i = 0; i < n * 4; i += 4) for (let ch = 0; ch < 3; ch++) d[i + ch] = d[i + ch] / Math.max(bg[i + ch], 30) * 255;
+  // 2) choose black / white points from this photo (paper ≈ the common bright level, ink ≈ the darkest 0.4%)
+  const hist = new Uint32Array(256); let cnt = 0;
+  for (let i = 0; i < n * 4; i += 16) { hist[(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0]++; cnt++; }
+  const pct = p => { let a = 0; for (let v = 0; v < 256; v++) { a += hist[v]; if (a >= cnt * p) return v; } return 255; };
+  const white = Math.max(200, Math.min(250, pct(0.5) - 6)), black = Math.min(90, Math.max(0, pct(0.004) + 6));
+  const span = Math.max(40, white - black), gamma = strong === false ? 1.15 : 1.45;   // gamma > 1 darkens text strokes
+  const lut = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v++) { const t = Math.min(1, Math.max(0, (v - black) / span)); lut[v] = Math.round(255 * Math.pow(t, gamma)); }
+  for (let i = 0; i < n * 4; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
   if (mode === 'gray' || mode === 'bw') {
     for (let i = 0; i < n * 4; i += 4) {
       let g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-      if (mode === 'bw') g = g < 150 ? 0 : g < 190 ? (g - 150) * 6.4 : 255;
+      if (mode === 'bw') g = g < 140 ? 0 : g < 185 ? (g - 140) * 5.67 : 255;
       d[i] = d[i + 1] = d[i + 2] = g;
     }
-  } else {
-    // keep real ink colours (blue pen, red stamps) but make faint tints of the paper white
-    for (let i = 0; i < n * 4; i += 4) {
-      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
-      if (mn > 200 && mx - mn < 40) d[i] = d[i + 1] = d[i + 2] = Math.min(255, mn + (mx - mn) * 0.2 + 12);
-    }
   }
-  // 2) light sharpening so text looks crisp
-  if (mode !== 'bw' && n < 16e6) {
-    const src = new Uint8ClampedArray(d);
+  // 3) sharpen letter edges (unsharp mask with a small threshold so the paper stays smooth)
+  if (n < 24e6) {
+    const src = new Uint8ClampedArray(d), W4 = w * 4;
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-      const i = (y * w + x) * 4;
+      const i = y * W4 + x * 4;
       for (let ch = 0; ch < 3; ch++) {
-        const b = (src[i + ch - 4] + src[i + ch + 4] + src[i + ch - w * 4] + src[i + ch + w * 4]) / 4;
-        d[i + ch] = src[i + ch] + (src[i + ch] - b) * 0.55;
+        const j = i + ch;
+        const blur = (src[j - W4 - 4] + 2 * src[j - W4] + src[j - W4 + 4] + 2 * src[j - 4] + 4 * src[j] + 2 * src[j + 4] + src[j + W4 - 4] + 2 * src[j + W4] + src[j + W4 + 4]) / 16;
+        const diff = src[j] - blur;
+        if (diff > 5 || diff < -5) d[j] = src[j] + diff * 1.1;
       }
     }
+  }
+  // 4) clean paper: near-white, colourless pixels become pure white (keeps blue pen / red stamps)
+  if (mode !== 'bw') for (let i = 0; i < n * 4; i += 4) {
+    const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+    if (mn > 222 && mx - mn < 35) d[i] = d[i + 1] = d[i + 2] = 255;
   }
   ctx.putImageData(id, 0, 0);
   return c;
@@ -755,13 +759,19 @@ async function runResize(files, o, st) {
 
 async function scanPage(files, i, o, st) {
   st(T('Processing page') + ' ' + (i + 1) + ' / ' + files.length + '…', i / files.length); await tick();
-  let c = await fileToCanvas(files[i], 1, '#ffffff', capSide(3200));
+  let c = await fileToCanvas(files[i], 1, '#ffffff', LIMITS.docSide);
   const s = scanQuads.get(files[i]);
   let q = s && (s.manual || o.crop === 'on') ? s.q : null;
   if (!s && o.crop === 'on') q = detectQuad(c);
   const full = q && q.every((p, j) => Math.abs(p[0] - [0, 1, 1, 0][j]) < 0.005 && Math.abs(p[1] - [0, 0, 1, 1][j]) < 0.005);
   if (q && !full) { st(T('Straightening page') + ' ' + (i + 1) + '…', (i + 0.4) / files.length); await tick(); c = warpQuad(c, q); }
   st(T('Cleaning page') + ' ' + (i + 1) + '…', (i + 0.7) / files.length); await tick();
+  // enlarge small / low-resolution pages to about 300 dpi for A4 (2480 px on the short side) so letters stay smooth
+  const short = Math.min(c.width, c.height), target = Math.min(2480, Math.sqrt(LIMITS.maxPixels / (c.width / c.height + c.height / c.width) / 1.1) | 0);
+  if (o.filter !== 'original' && short < target * 0.9) {
+    const k = target / short, u = newCanvas(c.width * k, c.height * k, '#ffffff'), ux = u.getContext('2d');
+    ux.imageSmoothingQuality = 'high'; ux.drawImage(c, 0, 0, u.width, u.height); c = u;
+  }
   c = docFilter(c, o.filter);
   if (o.crop === 'on') { const ang = estimateSkew(c); if (Math.abs(ang) >= 0.3) c = rotateCanvas(c, -ang); }  // level the text lines
   return c;
@@ -770,7 +780,7 @@ async function runScanImages(files, o, st) {
   const out = [], mime = o.fmt === 'png' ? 'image/png' : 'image/jpeg';
   for (let i = 0; i < files.length; i++) {
     const c = await scanPage(files, i, o, st);
-    out.push({ name: base(files[i].name) + '-scan.' + o.fmt, blob: await canvasToBlob(c, mime, 0.9), info: c.width + '×' + c.height + ' px' });
+    out.push({ name: base(files[i].name) + '-scan.' + o.fmt, blob: await canvasToBlob(c, mime, 0.94), info: c.width + '×' + c.height + ' px' });
   }
   return out;
 }
@@ -779,7 +789,7 @@ async function runScan(files, o, st) {
   const pdf = await PDFLib.PDFDocument.create();
   for (let i = 0; i < files.length; i++) {
     const c = await scanPage(files, i, o, st);
-    const img = await pdf.embedJpg(await jpegBytes(c, 0.85));
+    const img = await pdf.embedJpg(await jpegBytes(c, 0.9));
     const [pw, ph] = o.page === 'fit' ? [c.width * 0.75, c.height * 0.75] : (c.width > c.height ? [A4[1], A4[0]] : A4);
     const page = pdf.addPage([pw, ph]);
     const m = o.page === 'fit' ? 0 : 14, k = Math.min((pw - 2 * m) / img.width, (ph - 2 * m) / img.height);
