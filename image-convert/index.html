@@ -7,6 +7,21 @@
 <meta name="description" content="JPG, PNG, WebP and iPhone HEIC. Resize and compress too. Free, no upload – works in your browser. Files never leave your device.">
 <link rel="canonical" href="https://drkaushik-dnb.github.io/pdfconvertfree/image-convert/">
 <meta name="theme-color" content="#4f46e5">
+<script>
+/* Layout: auto / mobile / desktop. Auto shows the phone layout on phones even when the browser asks for the desktop site. */
+function applyView(){try{
+var v='auto';try{v=JSON.parse(localStorage.getItem('pdfc-view'))||'auto'}catch(e){}
+var de=document.documentElement;de.style.zoom='';de.classList.remove('mview','dview');
+var W=window.innerWidth,S=Math.min(screen.width||W,screen.height||W);
+var touch=window.matchMedia&&matchMedia('(pointer:coarse)').matches;
+var phone=touch&&S<600;
+if(v==='mobile'||(v==='auto'&&phone)){
+ if(phone&&W>S*1.15&&W>500){de.classList.add('mview');de.style.zoom=(W/Math.min(S,480)).toFixed(3)}
+ else if(v==='mobile'&&W>600){de.classList.add('mview','mframe')}
+}else if(v==='desktop'&&W<1000){de.classList.add('dview');de.style.zoom=(W/1024).toFixed(3)}
+}catch(e){}}
+applyView();addEventListener('resize',function(){clearTimeout(window.__vt);window.__vt=setTimeout(applyView,150)});
+</script>
 <link rel="manifest" href="../manifest.json">
 <link rel="icon" type="image/png" href="../favicon.png">
 <link rel="apple-touch-icon" href="../apple-touch-icon.png">
@@ -244,7 +259,8 @@ textarea.ffield{resize:none;line-height:1.2}
 .ract .rb{background:#fff;border:1px solid #b9dccb;color:var(--ink)}
 .ract .rb.share{background:#e0f2fe;border-color:#7dd3fc;color:#075985}
 .ract .save{background:var(--ok);color:#fff;border:0}
-@media (min-width:640px){.ract{width:auto}.ract button{flex:0 0 auto;min-width:96px}}
+@media (min-width:640px){html:not(.mview) .ract{width:auto}html:not(.mview) .ract button{flex:0 0 auto;min-width:96px}}
+html.dview .ract{width:auto}html.dview .ract button{flex:0 0 auto;min-width:96px}
 .card{position:relative}
 .card.hot{border:2px solid transparent;background:linear-gradient(#fbfaff,#f3f1ff) padding-box,linear-gradient(135deg,#f59e0b,#ec4899,#6366f1) border-box;box-shadow:0 6px 18px rgba(99,102,241,.18)}
 .card.hot b{color:#3b2bb8}
@@ -266,7 +282,8 @@ body.tabbed footer{padding-bottom:100px}
 .shrow{display:flex;align-items:center;justify-content:space-between}
 .shrow a{font:600 13px Inter,sans-serif;text-decoration:none;color:var(--pri);margin-top:12px}
 .pgrid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-@media(min-width:720px){.pgrid2{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media(min-width:720px){html:not(.mview) .pgrid2{grid-template-columns:repeat(4,minmax(0,1fr))}}
+html.dview .pgrid2{grid-template-columns:repeat(4,minmax(0,1fr))}
 .pcard{display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:18px;text-decoration:none;border:2px solid transparent;background:linear-gradient(#fbfaff,#f3f1ff) padding-box,linear-gradient(135deg,#f59e0b,#ec4899,#6366f1) border-box;box-shadow:0 6px 16px rgba(99,102,241,.16);color:inherit}
 .pcard b{font-size:15px;line-height:1.25;color:#2e2391}
 .pcard small{font-size:12.5px;line-height:1.35;color:#5b6475}
@@ -285,7 +302,9 @@ body.tabbed footer{padding-bottom:100px}
 .bnav a span{display:flex;align-items:center;justify-content:center;width:60px;height:32px;border-radius:16px}
 .bnav a.on{color:#3730a3;font-weight:700}
 .bnav a.on span{background:#e0e7ff}
-@media(min-width:720px){.bnav{left:50%;transform:translateX(-50%);width:min(560px,100%);bottom:12px;border:1px solid var(--line);border-radius:22px;box-shadow:0 6px 24px rgba(20,30,60,.12);height:72px;padding:4px 8px}.fab{bottom:104px;right:calc(50% - 280px)}}
+@media(min-width:720px){html:not(.mview) .bnav{left:50%;transform:translateX(-50%);width:min(560px,100%);bottom:12px;border:1px solid var(--line);border-radius:22px;box-shadow:0 6px 24px rgba(20,30,60,.12);height:72px;padding:4px 8px}html:not(.mview) .fab{bottom:104px;right:calc(50% - 280px)}}
+html.dview .bnav{left:50%;transform:translateX(-50%);width:min(560px,100%);bottom:12px;border:1px solid var(--line);border-radius:22px;box-shadow:0 6px 24px rgba(20,30,60,.12);height:72px;padding:4px 8px}html.dview .fab{bottom:104px;right:calc(50% - 280px)}
+html.mframe main{max-width:460px}html.mframe .bnav{left:50%;transform:translateX(-50%);width:460px}html.mframe .fab{right:calc(50% - 212px)}html.mframe header .wrap{max-width:430px}
 .ftabs{display:flex;gap:8px;margin:16px 0 12px;flex-wrap:wrap}
 .ftabs .chip{min-height:38px;padding:0 16px}
 .flist2{list-style:none;margin:0;padding:4px 12px;background:#fff;border:1px solid var(--line);border-radius:16px}

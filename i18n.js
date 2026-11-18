@@ -1,6 +1,6 @@
 /* Hindi labels for PDF Converter. Keys are the English text. */
 window.I18N = {
-hi: {
+hi: {'Display':'डिस्प्ले','Layout':'लेआउट','Auto uses the phone layout on phones':'Auto में फ़ोन पर फ़ोन वाला लेआउट','Auto':'ऑटो','Mobile view':'मोबाइल व्यू','Desktop view':'डेस्कटॉप व्यू',
 "Saved": "सेव हो गया",
 "Loading pages…": "पेज लोड हो रहे हैं…",
 "Tap the buttons under each page to rotate, delete or move it.": "हर पेज के नीचे के बटन से उसे घुमाएँ, हटाएँ या आगे-पीछे करें।",

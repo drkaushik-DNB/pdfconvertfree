@@ -2678,6 +2678,8 @@ async function renderSettings() {
   const item = (i, title, sub, right, attrs) => '<div class="sitem"' + (attrs || '') + '><span class="sicon">' + ico(i, 20) + '</span><span class="stext"><b>' + esc(T(title)) + '</b><small>' + esc(sub) + '</small></span>' + (right || '') + '</div>';
   const looks = [['enhance', 'Enhanced (white background)'], ['bw', 'Black & white'], ['gray', 'Grayscale'], ['original', 'Original colour']];
   const lookSel = '<select id="setlook" aria-label="' + esc(T('Default scan look')) + '">' + looks.map(([v, l]) => '<option value="' + v + '"' + (getSet('look', 'enhance') === v ? ' selected' : '') + '>' + esc(T(l)) + '</option>').join('') + '</select>';
+  const views = [['auto', 'Auto'], ['mobile', 'Mobile view'], ['desktop', 'Desktop view']];
+  const viewSel = '<select id="setview" aria-label="' + esc(T('Layout')) + '">' + views.map(([v, l]) => '<option value="' + v + '"' + (getSet('view', 'auto') === v ? ' selected' : '') + '>' + esc(T(l)) + '</option>').join('') + '</select>';
   $('#main').innerHTML =
     '<section class="setcard"><h2>' + esc(T('General')) + '</h2>' +
       item('globe', 'Language', LANG === 'hi' ? 'हिंदी' : 'English', langPicker()) +
@@ -2686,6 +2688,8 @@ async function renderSettings() {
     '<section class="setcard"><h2>' + esc(T('Scanner')) + '</h2>' +
       item('camera', 'Auto capture', T('Take the photo when the page is steady'), sw('autocap', true)) +
       item('scan', 'Default scan look', '', lookSel) + '</section>' +
+    '<section class="setcard"><h2>' + esc(T('Display')) + '</h2>' +
+      item('grid', 'Layout', T('Auto uses the phone layout on phones'), viewSel) + '</section>' +
     '<section class="setcard"><h2>' + esc(T('About')) + '</h2>' +
       (installEvt ? item('download', 'Install app', T('Add to your home screen'), '<button class="chip" id="install2">' + esc(T('Install')) + '</button>') : '') +
       (PLAY_URL ? '<a class="sitem" href="' + PLAY_URL + '"><span class="sicon">' + ico('star', 20) + '</span><span class="stext"><b>' + esc(T('Rate on Play Store')) + '</b><small>' + esc(T('Help others find the app')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>' : '') +
@@ -2696,6 +2700,7 @@ async function renderSettings() {
   bindLang();
   document.querySelectorAll('[data-sw]').forEach(b => b.onclick = () => { const v = !getSet(b.dataset.sw, b.dataset.def === 'true'); setSet(b.dataset.sw, v); b.setAttribute('aria-checked', v); });
   $('#setlook').onchange = e => setSet('look', e.target.value);
+  $('#setview').onchange = e => { setSet('view', e.target.value); if (window.applyView) applyView(); };
   $('#clearfiles').onclick = async () => { try { for (const r of await fdbAll()) await fdbDel(r.id); toast(T('Saved files cleared')); } catch (e) {} renderSettings(); };
   const i2 = $('#install2'); if (i2) i2.onclick = async () => { try { installEvt.prompt(); await installEvt.userChoice; } catch (e) {} installEvt = null; renderSettings(); };
   $('#shareapp').onclick = async () => {
