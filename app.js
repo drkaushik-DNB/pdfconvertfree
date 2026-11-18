@@ -2336,7 +2336,7 @@ function renderTool(t, keep) {
 function addFiles(list) {
   const t = state.tool; let arr = [...list];
   if (!arr.length) return;
-  if (t.accept === PDF_ACCEPT) { const bad = arr.filter(f => !isPdf(f)); arr = arr.filter(f => isPdf(f)); if (bad.length) toast(T('Please choose a PDF file.')); if (!arr.length) return; }
+  if (t.id === 'edit-pdf') { const bad = arr.filter(f => !isPdf(f)); arr = arr.filter(f => isPdf(f)); if (bad.length) toast(T('Please choose a PDF file.')); if (!arr.length) return; }
   if (!t.multi) { arr = arr.slice(0, 1); state.files = []; }
   for (const f of arr) state.files.push({ id: ++fid, file: f });
   clearResults(); renderFiles();
