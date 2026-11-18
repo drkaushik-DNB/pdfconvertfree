@@ -201,6 +201,7 @@ hi: {
 "Resizing": "साइज़ बदला जा रहा है",
 "Processing page": "पेज तैयार हो रहा है",
 "Straightening page": "पेज सीधा किया जा रहा है",
+"Cleaning page": "पेज साफ़ किया जा रहा है",
 "Adding image": "इमेज जोड़ी जा रही है",
 "page": "पेज",
 "Building PDF…": "PDF बन रहा है…",

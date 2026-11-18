@@ -394,32 +394,136 @@ function localMean(gray, w, h, r) {
   }
   return m;
 }
+/* Paper colour at every point (per colour channel): shrink, wipe out the text with a "max" filter, blur, enlarge.
+   Dividing by it removes shadows and colour casts (yellow light) so the paper becomes pure white. */
+function paperBackground(c) {
+  const W = c.width, H = c.height, s = Math.max(1, Math.round(Math.max(W, H) / 220));
+  const w = Math.max(3, Math.round(W / s)), h = Math.max(3, Math.round(H / s));
+  const sm = newCanvas(w, h), sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, w, h);
+  const id = sx.getImageData(0, 0, w, h); let d = id.data;
+  const pass = (fn, r) => {
+    const out = new Uint8ClampedArray(d.length);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let ch = 0; ch < 3; ch++) {
+      let v = fn === 'max' ? 0 : 0, n = 0;
+      for (let dy = -r; dy <= r; dy++) { const yy = Math.min(h - 1, Math.max(0, y + dy)); for (let dx = -r; dx <= r; dx++) { const xx = Math.min(w - 1, Math.max(0, x + dx)); const p = d[(yy * w + xx) * 4 + ch]; if (fn === 'max') { if (p > v) v = p; } else { v += p; n++; } } }
+      out[(y * w + x) * 4 + ch] = fn === 'max' ? v : v / n;
+    }
+    for (let i = 3; i < out.length; i += 4) out[i] = 255;
+    d = out;
+  };
+  pass('max', 2); pass('max', 1); pass('avg', 2); pass('avg', 2);
+  id.data.set(d); sx.putImageData(id, 0, 0);
+  const big = newCanvas(W, H), bx = big.getContext('2d'); bx.imageSmoothingQuality = 'high'; bx.drawImage(sm, 0, 0, W, H);
+  return bx.getImageData(0, 0, W, H).data;
+}
 function docFilter(c, mode) {
   if (mode === 'original') return c;
-  const ctx = c.getContext('2d'), w = c.width, h = c.height;
-  const id = ctx.getImageData(0, 0, w, h), d = id.data, n = w * h;
-  const gray = new Uint8Array(n);
-  for (let i = 0; i < n; i++) gray[i] = (d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114) | 0;
-  if (mode === 'gray') { for (let i = 0; i < n; i++) d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = gray[i]; }
-  else {
-    const mean = localMean(gray, w, h, Math.max(8, Math.round(Math.max(w, h) / 30)));
-    for (let i = 0; i < n; i++) {
-      if (mode === 'bw') { const v = gray[i] < mean[i] * 0.86 ? 0 : 255; d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v; }
-      else { const k = 245 / Math.max(mean[i], 40); for (let ch = 0; ch < 3; ch++) d[i * 4 + ch] = Math.min(255, d[i * 4 + ch] * k); }
+  const ctx = c.getContext('2d'), w = c.width, h = c.height, n = w * h;
+  const id = ctx.getImageData(0, 0, w, h), d = id.data;
+  const bg = paperBackground(c);
+  const BLACK = 28, WHITE = 232, k = 255 / (WHITE - BLACK);
+  // 1) flatten lighting + white balance, then stretch contrast (dark text, white paper)
+  for (let i = 0; i < n * 4; i += 4) {
+    for (let ch = 0; ch < 3; ch++) {
+      const v = d[i + ch] / Math.max(bg[i + ch], 30) * 255;
+      d[i + ch] = (v - BLACK) * k;
+    }
+  }
+  if (mode === 'gray' || mode === 'bw') {
+    for (let i = 0; i < n * 4; i += 4) {
+      let g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      if (mode === 'bw') g = g < 150 ? 0 : g < 190 ? (g - 150) * 6.4 : 255;
+      d[i] = d[i + 1] = d[i + 2] = g;
+    }
+  } else {
+    // keep real ink colours (blue pen, red stamps) but make faint tints of the paper white
+    for (let i = 0; i < n * 4; i += 4) {
+      const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+      if (mn > 200 && mx - mn < 40) d[i] = d[i + 1] = d[i + 2] = Math.min(255, mn + (mx - mn) * 0.2 + 12);
+    }
+  }
+  // 2) light sharpening so text looks crisp
+  if (mode !== 'bw' && n < 16e6) {
+    const src = new Uint8ClampedArray(d);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const b = (src[i + ch - 4] + src[i + ch + 4] + src[i + ch - w * 4] + src[i + ch + w * 4]) / 4;
+        d[i + ch] = src[i + ch] + (src[i + ch] - b) * 0.55;
+      }
     }
   }
   ctx.putImageData(id, 0, 0);
   return c;
 }
 
+/* Page edges like phone scanner apps: for each side find the straight line where dark table turns into bright paper */
+function detectQuadEdges(c) {
+  const s = Math.min(1, 360 / Math.max(c.width, c.height));
+  const w = Math.max(8, Math.round(c.width * s)), h = Math.max(8, Math.round(c.height * s));
+  const sm = newCanvas(w, h), sx = sm.getContext('2d'); sx.imageSmoothingQuality = 'high'; sx.drawImage(c, 0, 0, w, h);
+  const d = sx.getImageData(0, 0, w, h).data, g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+  const gx = new Float32Array(w * h), gy = new Float32Array(w * h), at = (x, y) => g[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    gx[y * w + x] = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
+    gy[y * w + x] = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
+  }
+  const side = (horiz, sign, lo, hi) => {        // horiz: line y = p + t·(x - w/2); sign: which way is "inside"
+    const L = horiz ? w : h, res = [];
+    for (let deg = -22; deg <= 22; deg += 1) {
+      const t = Math.tan(deg * Math.PI / 180);
+      for (let p = lo; p <= hi; p++) {
+        let sc = 0, n = 0;
+        for (let u = Math.round(L * 0.12); u < L * 0.88; u += 2) {
+          const v = Math.round(p + t * (u - L / 2));
+          const x = horiz ? u : v, y = horiz ? v : u; if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;
+          const gr = (horiz ? gy : gx)[y * w + x] * sign; if (gr > 0) sc += Math.min(gr, 400); n++;
+        }
+        if (n > L * 0.25) res.push({ p, t, sc: sc / n });
+      }
+    }
+    if (!res.length) return null;
+    const best = Math.max(...res.map(r => r.sc)); if (best < 8) return null;
+    const good = res.filter(r => r.sc >= best * 0.6);
+    good.sort((a, b) => sign > 0 ? a.p - b.p : b.p - a.p);     // outermost strong edge
+    // among lines at that position keep the strongest angle
+    const p0 = good[0].p; return good.filter(r => Math.abs(r.p - p0) <= 2).sort((a, b) => b.sc - a.sc)[0];
+  };
+  const top = side(true, 1, 1, Math.round(h * 0.5)), bot = side(true, -1, Math.round(h * 0.5), h - 2);
+  const lef = side(false, 1, 1, Math.round(w * 0.5)), rig = side(false, -1, Math.round(w * 0.5), w - 2);
+  if (!top || !bot || !lef || !rig) return null;
+  // intersect y = a + b(x - w/2) with x = c + e(y - h/2)
+  const X = (H, V) => { const a = H.p, b = H.t, cc = V.p, e = V.t; const x = (cc + e * (a - b * w / 2 - h / 2)) / (1 - e * b); const y = a + b * (x - w / 2); return [x / (w - 1), y / (h - 1)]; };
+  const q = [X(top, lef), X(top, rig), X(bot, rig), X(bot, lef)].map(([x, y]) => [clamp(x, 0, 1), clamp(y, 0, 1)]);
+  const area = Math.abs(polyArea(q));
+  if (area < 0.15 || area > 0.985) return null;
+  return q;
+}
 /* Find the paper in a photo: largest bright region → its 4 corners (normalised 0..1) */
-function detectQuad(c) {
+function detectQuad(c) { return detectQuadEdges(c) || detectQuadRegion(c); }
+function detectQuadRegion(c) {
   const s = Math.min(1, 360 / Math.max(c.width, c.height));
   const w = Math.max(1, Math.round(c.width * s)), h = Math.max(1, Math.round(c.height * s));
   const sm = newCanvas(w, h); const sx = sm.getContext('2d'); sx.drawImage(c, 0, 0, w, h);
   const d = sx.getImageData(0, 0, w, h).data; const gray = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) gray[i] = (d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114) | 0;
-  const thr = otsu(gray);
+  // background colour = typical colour along the photo's edges; paper = whatever differs from it most
+  const er = [], eg = [], eb = [], m = Math.max(2, Math.round(Math.min(w, h) * 0.03));
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < m || y < m || x >= w - m || y >= h - m) { const i = (y * w + x) * 4; er.push(d[i]); eg.push(d[i + 1]); eb.push(d[i + 2]); }
+  const med = a => a.sort((p, q) => p - q)[a.length >> 1];
+  const R0 = med(er), G0 = med(eg), B0 = med(eb);
+  let mx = 1; const dist = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) { const dr = d[i * 4] - R0, dg = d[i * 4 + 1] - G0, db = d[i * 4 + 2] - B0; dist[i] = Math.sqrt(dr * dr + dg * dg + db * db); if (dist[i] > mx) mx = dist[i]; }
+  for (let i = 0; i < w * h; i++) gray[i] = Math.min(255, dist[i] / mx * 255) | 0;
+  // threshold relative to how far the paper is from the background (works in shadows too)
+  const sorted = Float32Array.from(dist).sort(); const p90 = sorted[Math.floor(sorted.length * 0.9)];
+  let thr = Math.min(otsu(gray), Math.max(18, 0.3 * p90) / mx * 255);
+  // close small gaps (text, spiral binding) so the page is one solid shape
+  let mk = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) mk[i] = gray[i] > thr ? 1 : 0;
+  const morph = (src, dil) => { const o = new Uint8Array(w * h); for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { let v = dil ? 0 : 1; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const yy = Math.min(h - 1, Math.max(0, y + dy)), xx = Math.min(w - 1, Math.max(0, x + dx)); const p = src[yy * w + xx]; if (dil ? p : !p) v = dil ? 1 : 0; } o[y * w + x] = v; } return o; };
+  mk = morph(morph(mk, true), true); mk = morph(morph(mk, false), false);
+  for (let i = 0; i < w * h; i++) gray[i] = mk[i] ? 255 : 0;
+  thr = 127;
   const lab = new Int32Array(w * h).fill(-1); let best = -1, bestN = 0; const stack = [];
   for (let p = 0; p < w * h; p++) {
     if (gray[p] <= thr || lab[p] !== -1) continue;
@@ -657,7 +761,10 @@ async function scanPage(files, i, o, st) {
   if (!s && o.crop === 'on') q = detectQuad(c);
   const full = q && q.every((p, j) => Math.abs(p[0] - [0, 1, 1, 0][j]) < 0.005 && Math.abs(p[1] - [0, 0, 1, 1][j]) < 0.005);
   if (q && !full) { st(T('Straightening page') + ' ' + (i + 1) + '…', (i + 0.4) / files.length); await tick(); c = warpQuad(c, q); }
-  return docFilter(c, o.filter);
+  st(T('Cleaning page') + ' ' + (i + 1) + '…', (i + 0.7) / files.length); await tick();
+  c = docFilter(c, o.filter);
+  if (o.crop === 'on') { const ang = estimateSkew(c); if (Math.abs(ang) >= 0.3) c = rotateCanvas(c, -ang); }  // level the text lines
+  return c;
 }
 async function runScanImages(files, o, st) {
   const out = [], mime = o.fmt === 'png' ? 'image/png' : 'image/jpeg';
