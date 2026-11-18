@@ -2695,7 +2695,7 @@ async function renderSettings() {
       (PLAY_URL ? '<a class="sitem" href="' + PLAY_URL + '"><span class="sicon">' + ico('star', 20) + '</span><span class="stext"><b>' + esc(T('Rate on Play Store')) + '</b><small>' + esc(T('Help others find the app')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>' : '') +
       '<button class="sitem" id="shareapp"><span class="sicon">' + ico('share', 20) + '</span><span class="stext"><b>' + esc(T('Share app')) + '</b><small>' + esc(T('Send to friends and colleagues')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></button>' +
       '<a class="sitem" href="' + BASE + 'privacy.html"><span class="sicon">' + ico('shield', 20) + '</span><span class="stext"><b>' + esc(T('Privacy policy')) + '</b><small>' + esc(T('Files never leave your phone')) + '</small></span><span class="tchev">' + ico('chev', 20) + '</span></a>' +
-      item('info', 'Version 2.0', 'Made by Dr. Kaushik · PEDIA360') + '</section>' + bottomNav('settings');
+      item('info', 'Version 2.0', 'Made by Dr. Kaushik') + '</section>' + bottomNav('settings');
   document.querySelectorAll('.setcard').forEach(sec => { const d = document.createElement('div'); d.className = 'slist'; [...sec.children].filter(c => c.tagName !== 'H2').forEach(c => d.appendChild(c)); sec.appendChild(d); });
   bindLang();
   document.querySelectorAll('[data-sw]').forEach(b => b.onclick = () => { const v = !getSet(b.dataset.sw, b.dataset.def === 'true'); setSet(b.dataset.sw, v); b.setAttribute('aria-checked', v); });
